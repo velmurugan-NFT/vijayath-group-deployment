@@ -1,0 +1,358 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      String
+  sectorId  String?
+  sector    Sector?  @relation(fields: [sectorId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projectAssignments ProjectAssignment[]
+  requestedPOs       PurchaseOrder[]     @relation("PORequester")
+  approvedPOs        PurchaseOrder[]     @relation("POApprover")
+  paymentRequests    PaymentRequest[]    @relation("PaymentRequester")
+  approvedPayments   PaymentRequest[]    @relation("PaymentApprover")
+  auditLogs          AuditLog[]
+  documents          Document[]
+  dailyStatuses      DailyStatus[]
+  attendances        Attendance[]
+  tasksUpdated       Task[]              @relation("TaskUpdater")
+}
+
+model Sector {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  users     User[]
+  projects  Project[]
+  templates Template[]
+}
+
+model ProjectAssignment {
+  id        String  @id @default(cuid())
+  userId    String
+  projectId String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+}
+
+model Project {
+  id          String        @id @default(cuid())
+  name        String
+  code        String?
+  client      String?
+  sectorId    String
+  sector      Sector        @relation(fields: [sectorId], references: [id])
+  parentId    String?
+  parent      Project?      @relation("SubProjects", fields: [parentId], references: [id])
+  subProjects Project[]     @relation("SubProjects")
+  capacityMw  Float?
+  billable    BigInt        @default(0)
+  netCost     BigInt        @default(0)
+  profit      BigInt        @default(0)
+  status      String @default("IN_EXECUTION")
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  assignments        ProjectAssignment[]
+  wbsCategories      WBSCategory[]
+  wbsLineItems       WBSLineItem[]
+  tasks              Task[]
+  quotationRequests  QuotationRequest[]
+  purchaseOrders     PurchaseOrder[]
+  paymentRequests    PaymentRequest[]
+  customerInvoices   CustomerInvoice[]
+  customerReceipts   CustomerReceipt[]
+  documents          Document[]
+  dailyStatuses      DailyStatus[]
+  attendances        Attendance[]
+}
+
+model Template {
+  id          String   @id @default(cuid())
+  name        String
+  sectorId    String
+  sector      Sector   @relation(fields: [sectorId], references: [id])
+  description String?
+  tasksJson   String   @default("[]")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model WBSCategory {
+  id        String        @id @default(cuid())
+  projectId String
+  project   Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  sortOrder Int           @default(0)
+  lineItems WBSLineItem[]
+}
+
+model WBSLineItem {
+  id          String      @id @default(cuid())
+  projectId   String
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  categoryId  String
+  category    WBSCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  description String
+  estimated   BigInt      @default(0)
+  committed   BigInt      @default(0)
+  paid        BigInt      @default(0)
+  sortOrder   Int         @default(0)
+
+  poLineItems       POLineItem[]
+  quotationRequests QuotationRequest[]
+}
+
+model Task {
+  id           String     @id @default(cuid())
+  projectId    String
+  project      Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title        String
+  department   String
+  status       String @default("NOT_STARTED")
+  plannedStart DateTime?
+  plannedEnd   DateTime?
+  actualStart  DateTime?
+  actualEnd    DateTime?
+  isDelayed    Boolean    @default(false)
+  remarks      String?
+  updatedById  String?
+  updatedBy    User?      @relation("TaskUpdater", fields: [updatedById], references: [id])
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+}
+
+model Vendor {
+  id        String   @id @default(cuid())
+  name      String
+  category  String
+  gstin     String?
+  pan       String?
+  bankName  String?
+  accountNo String?
+  ifsc      String?
+  contact   String?
+  createdAt DateTime @default(now())
+
+  quotations     Quotation[]
+  purchaseOrders PurchaseOrder[]
+}
+
+model QuotationRequest {
+  id           String                 @id @default(cuid())
+  projectId    String
+  project      Project                @relation(fields: [projectId], references: [id])
+  lineItemId   String?
+  lineItem     WBSLineItem?           @relation(fields: [lineItemId], references: [id])
+  title        String
+  description  String?
+  status       String @default("DRAFT")
+  requesterId  String
+  winnerId     String?
+  winnerReason String?
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+
+  quotations Quotation[]
+}
+
+model Quotation {
+  id          String           @id @default(cuid())
+  requestId   String
+  request     QuotationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  vendorId    String
+  vendor      Vendor           @relation(fields: [vendorId], references: [id])
+  amount      BigInt
+  deliveryDays Int?
+  notes       String?
+  isWinner    Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+}
+
+model PurchaseOrder {
+  id           String   @id @default(cuid())
+  poNumber     String   @unique
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id])
+  vendorId     String
+  vendor       Vendor   @relation(fields: [vendorId], references: [id])
+  title        String
+  totalAmount  BigInt
+  status       String @default("DRAFT")
+  requesterId  String
+  requester    User     @relation("PORequester", fields: [requesterId], references: [id])
+  approverId   String?
+  approver     User?    @relation("POApprover", fields: [approverId], references: [id])
+  approvedAt   DateTime?
+  rejectReason String?
+  quotationRequestId String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  lineItems       POLineItem[]
+  grns            GRN[]
+  vendorInvoices  VendorInvoice[]
+  paymentRequests PaymentRequest[]
+}
+
+model POLineItem {
+  id         String        @id @default(cuid())
+  poId       String
+  po         PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+  lineItemId String
+  lineItem   WBSLineItem   @relation(fields: [lineItemId], references: [id])
+  description String
+  amount     BigInt
+}
+
+model GRN {
+  id          String        @id @default(cuid())
+  poId        String
+  po          PurchaseOrder @relation(fields: [poId], references: [id])
+  grnNumber   String
+  receivedAt  DateTime
+  notes       String?
+  createdAt   DateTime      @default(now())
+}
+
+model VendorInvoice {
+  id            String        @id @default(cuid())
+  poId          String
+  po            PurchaseOrder @relation(fields: [poId], references: [id])
+  invoiceNumber String
+  amount        BigInt
+  invoiceDate   DateTime
+  createdAt     DateTime      @default(now())
+}
+
+model PaymentRequest {
+  id           String               @id @default(cuid())
+  projectId    String
+  project      Project              @relation(fields: [projectId], references: [id])
+  poId         String
+  po           PurchaseOrder        @relation(fields: [poId], references: [id])
+  amount       BigInt
+  purpose      String?
+  status       String @default("DRAFT")
+  requesterId  String
+  requester    User                 @relation("PaymentRequester", fields: [requesterId], references: [id])
+  approverId   String?
+  approver     User?                @relation("PaymentApprover", fields: [approverId], references: [id])
+  approvedAt   DateTime?
+  lineItemId   String?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  payment Payment?
+}
+
+model Payment {
+  id               String         @id @default(cuid())
+  paymentRequestId String         @unique
+  paymentRequest   PaymentRequest @relation(fields: [paymentRequestId], references: [id])
+  utr              String
+  paidAt           DateTime
+  amount           BigInt
+  createdAt        DateTime       @default(now())
+}
+
+model CustomerInvoice {
+  id            String        @id @default(cuid())
+  projectId     String
+  project       Project       @relation(fields: [projectId], references: [id])
+  invoiceNumber String        @unique
+  type          String
+  status        String @default("ISSUED")
+  amount        BigInt
+  taxAmount     BigInt        @default(0)
+  milestone     String?
+  issuedAt      DateTime      @default(now())
+  createdAt     DateTime      @default(now())
+}
+
+model CustomerReceipt {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id])
+  amount      BigInt
+  receivedAt  DateTime
+  reference   String?
+  createdAt   DateTime @default(now())
+}
+
+model Document {
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id])
+  filename   String
+  filepath   String
+  category   String?
+  version    Int      @default(1)
+  uploadedById String
+  uploadedBy User     @relation(fields: [uploadedById], references: [id])
+  createdAt  DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  action     String
+  entityType String
+  entityId   String?
+  metadata   String?
+  createdAt  DateTime @default(now())
+}
+
+model DailyStatus {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  date      DateTime
+  summary   String
+  createdAt DateTime @default(now())
+}
+
+model Attendance {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  date      DateTime
+  headcount Int
+  notes     String?
+  createdAt DateTime @default(now())
+}
+
+model ApprovalThreshold {
+  id        String @id @default(cuid())
+  role      String @unique
+  ceiling   BigInt
+}
+
+model BankAccount {
+  id            String @id @default(cuid())
+  bankName      String
+  accountNumber String
+  ifsc          String
+  isDefault     Boolean @default(false)
+}
