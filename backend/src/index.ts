@@ -75,8 +75,9 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
+  const status = (err as { status?: number }).status ?? 500;
   const message = err instanceof Error ? err.message : 'Internal server error';
-  if (!res.headersSent) res.status(500).json({ error: message });
+  if (!res.headersSent) res.status(status).json({ error: message });
 });
 
 const server = app.listen(PORT, () => console.log(`API running on http://localhost:${PORT}`));

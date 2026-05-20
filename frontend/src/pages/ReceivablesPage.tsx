@@ -26,12 +26,20 @@ type Receipt = { id: string; amount: number; receivedAt: string; reference?: str
 export function ReceivablesPage() {
   const [data, setData] = useState<Rec[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ projectId: '', amount: 0, receivedAt: new Date().toISOString().slice(0, 10), reference: '' });
 
   const load = () => {
     api<Rec[]>('/receipts/receivables').then(setData);
     api<Receipt[]>('/receipts').then(setReceipts);
+    // Load ALL projects for the "Record receipt" dialog dropdown.
+    // Previously the dialog used `data` (the ageing list) which only contains
+    // projects that already have invoices/receipts — new or empty projects
+    // would be missing. Fetching /projects separately gives the full list.
+    api<{ id: string; name: string; parentId: string | null }[]>('/projects')
+      .then((all) => setProjects(all))
+      .catch(() => {});
   };
   useEffect(() => { load(); }, []);
 
@@ -126,8 +134,17 @@ export function ReceivablesPage() {
       <FormDialog open={open} onOpenChange={setOpen} title="Record receipt" onSubmit={record}>
         <div className="field"><label>Project</label>
           <select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}>
-            <option value="">Select</option>
-            {data.map((r) => <option key={r.projectId} value={r.projectId}>{r.name}</option>)}
+            <option value="">— select project —</option>
+            {projects.filter((p) => !p.parentId).map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+            {projects.some((p) => p.parentId) && (
+              <optgroup label="Sub-projects">
+                {projects.filter((p) => p.parentId).map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </optgroup>
+            )}
           </select>
         </div>
         <div className="field"><label>Amount (₹)</label><input type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: Number(e.target.value) })} /></div>

@@ -10,7 +10,8 @@ import { ContextBanner } from '@/components/design/ContextBanner';
 import { AppTabs, AppTab } from '@/components/design/AppTabs';
 import { StatusPill } from '@/components/design/StatusPill';
 import { BudgetBar } from '@/components/design/BudgetBar';
-import { Folder, Plus, Receipt } from 'lucide-react';
+import { Folder, Plus, Receipt, Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 
 type Counts = { tasks: number; pos: number; payments: number; invoices: number; documents: number; audit: number };
 
@@ -116,7 +117,7 @@ export function ProjectDetailPage() {
         </div>
       )}
 
-      {tab === 'wbs' && <WbsTable wbs={wbs} projectId={id!} />}
+      {tab === 'wbs' && <WbsTable wbs={wbs} projectId={id!} onRefresh={() => api(`/projects/${id}/wbs`).then(setWbs)} />}
       {tab === 'tasks' && <TabTable title="Tasks" link={`/tasks${q}`} linkLabel="Manage all" headers={['Task', 'Department', 'Status']} rows={(tasks as TaskRow[]).map((t) => [t.title, t.department, <StatusPill key={t.id} status={t.status} />])} delayed={(tasks as TaskRow[]).filter((t) => t.isDelayed).map((t) => t.id)} />}
       {tab === 'pos' && <TabTable title="Purchase orders" link={`/quotations${q}`} headers={['PO #', 'Vendor', 'Amount', 'Status']} rows={(pos as PoRow[]).map((p) => [<Link key={p.id} to={`/pos/${p.id}`} className="underline">{p.poNumber}</Link>, p.vendor?.name ?? '—', formatINR(p.totalAmount), <StatusPill key={p.id} status={p.status} />])} />}
       {tab === 'payments' && <TabTable title="Payments" link={`/payments${q}`} headers={['PO', 'Amount', 'Status']} rows={(payments as PayRow[]).map((p) => [p.po?.poNumber, formatINR(p.amount), <StatusPill key={p.id} status={p.status} />])} />}
@@ -177,48 +178,183 @@ type InvRow = { id: string; invoiceNumber: string; amount: number; issuedAt: str
 type DocRow = { id: string; filename: string };
 type AuditRow = { id: string; action: string; createdAt: string; user?: { name: string } };
 
-function WbsTable({ wbs, projectId }: { wbs: unknown[]; projectId: string }) {
+function WbsTable({ wbs, projectId, onRefresh }: { wbs: unknown[]; projectId: string; onRefresh: () => void }) {
   const cats = wbs as WbsCat[];
+  const [showForm, setShowForm] = useState(false);
+  const [seeding, setSeeding] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ categoryName: '', description: '', estimated: '' });
+
+  const SOLAR_CATEGORIES = [
+    'Land', '33KV Transmission Line', 'Substation Work', 'Yard & Civil',
+    'Yard Products', 'Panel', 'MMS & Module Erection', 'DC & AC Cabling',
+    'Infrastructure', 'Liaisoning', 'Others',
+  ];
+  const existingCats = cats.map((c) => c.name);
+  const categoryOptions = [...new Set([...existingCats, ...SOLAR_CATEGORIES])];
+
+  const seedDefaults = async () => {
+    setSeeding(true);
+    try {
+      await api(`/projects/${projectId}/wbs/seed-defaults`, { method: 'POST' });
+      toast.success('Default Solar EPC WBS created — update estimated amounts as needed');
+      onRefresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to seed WBS');
+    } finally { setSeeding(false); }
+  };
+
+  const addLineItem = async () => {
+    if (!form.categoryName || !form.description) {
+      toast.error('Category and description are required'); return;
+    }
+    setSaving(true);
+    try {
+      await api(`/projects/${projectId}/wbs/line-items`, {
+        method: 'POST',
+        body: JSON.stringify({
+          categoryName: form.categoryName,
+          description: form.description,
+          estimated: form.estimated ? Math.round(parseFloat(form.estimated)) : 0,
+        }),
+      });
+      toast.success('Line item added');
+      setForm({ categoryName: '', description: '', estimated: '' });
+      setShowForm(false);
+      onRefresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to add line item');
+    } finally { setSaving(false); }
+  };
+
   return (
-    <Card>
-      <CardBody className="p-0">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>Line</th>
-              <th className="right">Estimated</th>
-              <th className="right">Committed</th>
-              <th className="right">Paid</th>
-              <th className="right">Remaining</th>
-              <th>Burn</th>
-            </tr>
-          </thead>
-          <tbody>
-            {cats.map((cat) => (
-              <Fragment key={cat.name}>
-                <tr className="group-row"><td colSpan={6}>{cat.name}</td></tr>
-                {cat.lineItems.map((li) => (
-                  <tr key={li.id}>
-                    <td className="name-cell" style={{ paddingLeft: 20 }}>
-                      {li.description}
-                      {li.contributingPOs?.length ? (
-                        <div className="secondary">{li.contributingPOs.map((p) => (
-                          <Link key={p.poNumber} to={`/pos?projectId=${projectId}`} className="underline mr-2">{p.poNumber}</Link>
-                        ))}</div>
-                      ) : null}
-                    </td>
-                    <td className="right amt">{formatINR(li.estimated)}</td>
-                    <td className="right amt">{formatINR(li.committed)}</td>
-                    <td className="right amt">{formatINR(li.paid)}</td>
-                    <td className="right amt">{formatINR(li.estimated - li.paid)}</td>
-                    <td style={{ width: 120 }}><BudgetBar est={li.estimated} committed={li.committed} paid={li.paid} /></td>
-                  </tr>
+    <div className="space-y-4">
+      {/* Empty state — offer to seed defaults */}
+      {cats.length === 0 && (
+        <Card>
+          <CardBody>
+            <div style={{ textAlign: 'center', padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                This project has no WBS items yet.
+              </p>
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', justifyContent: 'center' }}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={seeding}
+                  onClick={seedDefaults}
+                >
+                  {seeding
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Creating…</>
+                    : '⚡ Load Solar EPC defaults (11 categories)'
+                  }
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={() => setShowForm(true)}>
+                  <Plus className="w-3.5 h-3.5" /> Add manually
+                </button>
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>
+                Solar EPC defaults include: Land · 33KV Line · Substation · Yard &amp; Civil · Panels · MMS · Cabling · Liaisoning · Others
+              </p>
+            </div>
+          </CardBody>
+        </Card>
+      )}
+
+      {/* Add line item form */}
+      {(showForm || cats.length > 0) && (
+        <Card>
+          <CardBody>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+              <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>Add WBS line item</span>
+              {cats.length === 0 && (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={seedDefaults} disabled={seeding}>
+                  {seeding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : '⚡ Load Solar EPC defaults'}
+                </button>
+              )}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 140px auto', gap: '0.5rem', alignItems: 'end' }}>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label style={{ fontSize: '0.75rem' }}>Category *</label>
+                <select value={form.categoryName} onChange={(e) => setForm({ ...form, categoryName: e.target.value })}>
+                  <option value="">— select or type —</option>
+                  {categoryOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label style={{ fontSize: '0.75rem' }}>Description *</label>
+                <input
+                  placeholder="e.g. PV Modules supply — 77 kW"
+                  value={form.description}
+                  onChange={(e) => setForm({ ...form, description: e.target.value })}
+                />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label style={{ fontSize: '0.75rem' }}>Estimated (₹)</label>
+                <input
+                  type="number"
+                  placeholder="0"
+                  value={form.estimated}
+                  onChange={(e) => setForm({ ...form, estimated: e.target.value })}
+                />
+              </div>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={saving || !form.categoryName || !form.description}
+                onClick={addLineItem}
+                style={{ whiteSpace: 'nowrap' }}
+              >
+                {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <><Plus className="w-3.5 h-3.5" /> Add</>}
+              </button>
+            </div>
+          </CardBody>
+        </Card>
+      )}
+
+      {/* WBS table */}
+      {cats.length > 0 && (
+        <Card>
+          <CardBody className="p-0">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Line</th>
+                  <th className="right">Estimated</th>
+                  <th className="right">Committed</th>
+                  <th className="right">Paid</th>
+                  <th className="right">Remaining</th>
+                  <th>Burn</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cats.map((cat) => (
+                  <Fragment key={cat.name}>
+                    <tr className="group-row"><td colSpan={6}>{cat.name}</td></tr>
+                    {cat.lineItems.map((li) => (
+                      <tr key={li.id}>
+                        <td className="name-cell" style={{ paddingLeft: 20 }}>
+                          {li.description}
+                          {li.contributingPOs?.length ? (
+                            <div className="secondary">{li.contributingPOs.map((p) => (
+                              <Link key={p.poNumber} to={`/pos?projectId=${projectId}`} className="underline mr-2">{p.poNumber}</Link>
+                            ))}</div>
+                          ) : null}
+                        </td>
+                        <td className="right amt">{formatINR(li.estimated)}</td>
+                        <td className="right amt">{formatINR(li.committed)}</td>
+                        <td className="right amt">{formatINR(li.paid)}</td>
+                        <td className="right amt">{formatINR(li.estimated - li.paid)}</td>
+                        <td style={{ width: 120 }}><BudgetBar est={li.estimated} committed={li.committed} paid={li.paid} /></td>
+                      </tr>
+                    ))}
+                  </Fragment>
                 ))}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
-      </CardBody>
-    </Card>
+              </tbody>
+            </table>
+          </CardBody>
+        </Card>
+      )}
+    </div>
   );
 }

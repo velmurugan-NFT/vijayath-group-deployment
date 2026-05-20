@@ -1,9 +1,15 @@
-import { User } from '@prisma/client';
 import { Role } from './constants.js';
 
 export type Action =
-  | 'read' | 'create' | 'update' | 'delete' | 'approve'
-  | 'users:create' | 'settings:manage' | 'audit:read' | 'reports:export';
+  | 'read'
+  | 'create'
+  | 'update'
+  | 'delete'
+  | 'approve'
+  | 'users:create'
+  | 'settings:manage'
+  | 'audit:read'
+  | 'reports:export';
 
 export interface ResourceContext {
   sectorId?: string | null;
@@ -11,65 +17,131 @@ export interface ResourceContext {
   requesterId?: string | null;
 }
 
-export interface UserWithScope extends User {
-  projectIds?: string[];
+export interface UserWithScope {
+  id: string;
+  role: Role;
+  sectorId?: string | null;
 }
 
-export function can(user: UserWithScope, action: Action, resource?: ResourceContext): boolean {
-  if (user.role === Role.SUPER_ADMIN) return true;
+export function can(
+  user: UserWithScope,
+  action: Action,
+  resource?: ResourceContext
+): boolean {
 
-  if (action === 'users:create' || action === 'settings:manage') {
-    return user.role === Role.SUPER_ADMIN;
-  }
-
-  if (action === 'audit:read') {
-    return user.role === Role.SUPER_ADMIN || user.role === Role.CORPORATE_OFFICE;
-  }
-
-  if (action === 'reports:export') return true;
-
-  if (user.role === Role.CORPORATE_OFFICE) {
+  // SUPER ADMIN
+  if (user.role === 'SUPER_ADMIN') {
     return true;
   }
 
-  // Global master data (vendors etc.) — all four roles in POC
-  if ((action === 'create' || action === 'update') && resource === undefined) {
-    return true;
+  // CORPORATE OFFICE
+  if (user.role === 'CORPORATE_OFFICE') {
+
+    if (
+      action === 'read' ||
+      action === 'create' ||
+      action === 'update' ||
+      action === 'approve' ||
+      action === 'audit:read' ||
+      action === 'reports:export'
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
-  if (!resource) return false;
+  // SECTOR HEAD
+  if (user.role === 'SECTOR_HEAD') {
 
-  if (user.role === Role.SECTOR_HEAD) {
-    if (!user.sectorId) return false;
-    if (resource.sectorId && resource.sectorId !== user.sectorId) return false;
-    return true;
+    if (
+      action === 'read' ||
+      action === 'create' ||
+      action === 'update' ||
+      action === 'approve'
+    ) {
+
+      // no sector context
+      if (!resource?.sectorId) {
+        return true;
+      }
+
+      return user.sectorId === resource.sectorId;
+    }
+
+    return false;
   }
 
-  if (user.role === Role.PROJECT_HEAD) {
-    const ids = user.projectIds ?? [];
-    if (resource.projectId && !ids.includes(resource.projectId)) return false;
-    return true;
+  // PROJECT HEAD
+  if (user.role === 'PROJECT_HEAD') {
+
+    if (
+      action === 'read' ||
+      action === 'update'
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
   return false;
 }
 
-export function assertCan(user: UserWithScope, action: Action, resource?: ResourceContext): void {
-  if (!can(user, action, resource)) {
-    const err = new Error('Forbidden');
-    (err as Error & { status: number }).status = 403;
-    throw err;
+export function assertCan(
+  user: UserWithScope,
+  action: Action,
+  resource?: ResourceContext
+): boolean {
+
+  const allowed = can(user, action, resource);
+
+  if (!allowed) {
+
+    console.warn(
+      `Forbidden: ${user.role} cannot perform ${action}`
+    );
+
+    return false;
   }
+
+  return true;
 }
 
-export function blockSelfApproval(approverId: string, requesterId: string | null | undefined): void {
-  if (requesterId && approverId === requesterId) {
-    const err = new Error('Self-approval is not allowed');
-    (err as Error & { status: number }).status = 400;
-    throw err;
+/**
+ * Prevent maker-checker conflicts
+ */
+export function blockMakerChecker(
+  makerId: string,
+  checkerId: string
+): boolean {
+
+  if (makerId === checkerId) {
+    console.warn(
+      'Maker-checker violation detected'
+    );
+
+    return false;
   }
+
+  return true;
 }
 
-export function blockMakerChecker(amount: number, approverId: string, requesterId: string | null | undefined): void {
-  if (amount > 50000) blockSelfApproval(approverId, requesterId);
+/**
+ * Prevent approving own records
+ */
+export function blockSelfApproval(
+  requesterId: string,
+  approverId: string
+): boolean {
+
+  if (requesterId === approverId) {
+    console.warn(
+      'Self approval blocked'
+    );
+
+    return false;
+  }
+
+  return true;
 }
