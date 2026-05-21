@@ -6,28 +6,35 @@ datasource db {
   provider = "sqlite"
   url      = env("DATABASE_URL")
 }
-
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
   password  String
   name      String
   role      String
+
+  approvalLimit BigInt @default(0)
+
   sectorId  String?
   sector    Sector?  @relation(fields: [sectorId], references: [id])
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   projectAssignments ProjectAssignment[]
-  requestedPOs       PurchaseOrder[]     @relation("PORequester")
-  approvedPOs        PurchaseOrder[]     @relation("POApprover")
-  paymentRequests    PaymentRequest[]    @relation("PaymentRequester")
-  approvedPayments   PaymentRequest[]    @relation("PaymentApprover")
-  auditLogs          AuditLog[]
-  documents          Document[]
-  dailyStatuses      DailyStatus[]
-  attendances        Attendance[]
-  tasksUpdated       Task[]              @relation("TaskUpdater")
+
+  requestedPOs     PurchaseOrder[]  @relation("PORequester")
+  approvedPOs      PurchaseOrder[]  @relation("POApprover")
+
+  paymentRequests  PaymentRequest[] @relation("PaymentRequester")
+  approvedPayments PaymentRequest[] @relation("PaymentApprover")
+
+  auditLogs     AuditLog[]
+  documents     Document[]
+  dailyStatuses DailyStatus[]
+  attendances   Attendance[]
+
+  tasksUpdated Task[] @relation("TaskUpdater")
 }
 
 model Sector {

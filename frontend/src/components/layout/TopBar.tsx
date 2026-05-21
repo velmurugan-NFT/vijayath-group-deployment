@@ -71,14 +71,36 @@ export function TopBar({ onMenuOpen }: { onMenuOpen?: () => void }) {
           <Bell className="w-4 h-4" />
           <span className="dot" />
         </button>
-        <Select value={activeProject?.id ?? '_none'} onValueChange={(v) => setActiveProjectId(v === '_none' ? null : v)}>
+                <Select
+          value={activeProject?.id ?? '_none'}
+          onValueChange={(v) => {
+            const projectId = v === '_none' ? null : v;
+
+            setActiveProjectId(projectId);
+
+            // Optional: save selected project after refresh
+            localStorage.setItem(
+              'activeProjectId',
+              projectId ?? ''
+            );
+          }}
+        >
           <SelectTrigger className="w-[160px] h-[34px] text-xs border-vijayanth-line bg-vijayanth-surface-2">
             <SelectValue placeholder="All projects" />
           </SelectTrigger>
+
           <SelectContent>
-            <SelectItem value="_none">All projects</SelectItem>
+            <SelectItem value="_none">
+              All projects
+            </SelectItem>
+
             {projects.map((p) => (
-              <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+              <SelectItem
+                key={p.id}
+                value={p.id}
+              >
+                {p.name}
+              </SelectItem>
             ))}
           </SelectContent>
         </Select>

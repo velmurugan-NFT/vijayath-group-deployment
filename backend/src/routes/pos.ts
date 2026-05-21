@@ -46,7 +46,41 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res, next) => {
       };
     }));
 
-    res.json({ ...po, budgetImpact });
+    // FR-6.5: include version history
+    const versions = await (prisma as any).pOVersion?.findMany?.({
+      where: { purchaseOrderId: po.id },
+      orderBy: { version: 'desc' },
+    }).catch(() => []) ?? [];
+
+    res.json({ ...po, budgetImpact, versions });
+  } catch (err) { next(err); }
+});
+
+// FR-6.3 AC2: edit a DRAFT PO before submission
+router.patch('/:id', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: req.params.id } });
+    if (!po) { res.status(404).json({ error: 'Not found' }); return; }
+    if (po.status !== POStatus.DRAFT && po.status !== POStatus.RETURNED) {
+      res.status(400).json({ error: `Cannot edit a PO in status ${po.status}` }); return;
+    }
+    const ctx = await getProjectContext(po.projectId);
+    assertCan(req.user!, 'update', ctx ?? undefined);
+
+    const { title, totalAmount, deliveryDate, paymentTerms } = req.body;
+    const updated = await prisma.purchaseOrder.update({
+      where: { id: po.id },
+      data: {
+        ...(title        && { title }),
+        ...(totalAmount  != null && { totalAmount: BigInt(totalAmount) }),
+        ...(deliveryDate && { deliveryDate: new Date(deliveryDate) }),
+        ...(paymentTerms && { paymentTerms }),
+        status: POStatus.DRAFT,
+      },
+      include: { vendor: true, lineItems: true },
+    });
+    await writeAudit(req.user!.id, 'PO_EDITED', 'PurchaseOrder', po.id, { poNumber: po.poNumber });
+    res.json(updated);
   } catch (err) { next(err); }
 });
 
@@ -77,18 +111,16 @@ router.post('/:id/approve', requireAuth, async (req: AuthRequest, res, next) => 
 
     blockSelfApproval(req.user!.id, po.requesterId);
     const poAmount = N(po.totalAmount);
-    blockMakerChecker(poAmount, req.user!.id, po.requesterId);
+    blockMakerChecker(req.user!.id, po.requesterId);
 
     if (!canRoleApprove(req.user!.role as Role, poAmount)) {
-      res.status(403).json({ error: 'Your role cannot approve this amount' });
-      return;
+      res.status(403).json({ error: 'Your role cannot approve this amount' }); return;
     }
 
     const lines = await Promise.all(po.lineItems.map((l) => prisma.wBSLineItem.findUnique({ where: { id: l.lineItemId } })));
     const hasBreach = po.lineItems.some((l, i) => (N(lines[i]?.committed) + N(l.amount)) > N(lines[i]?.estimated));
     if (hasBreach && !acknowledgeBreach) {
-      res.status(400).json({ error: 'Budget breach acknowledgment required', budgetBreach: true });
-      return;
+      res.status(400).json({ error: 'Budget breach acknowledgment required', budgetBreach: true }); return;
     }
 
     const updated = await prisma.purchaseOrder.update({
@@ -106,6 +138,7 @@ router.post('/:id/approve', requireAuth, async (req: AuthRequest, res, next) => 
 router.post('/:id/reject', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const { reason } = req.body;
+    if (!reason?.trim()) { res.status(400).json({ error: 'Rejection reason is required' }); return; }
     const po = await prisma.purchaseOrder.findUnique({ where: { id: req.params.id } });
     if (!po) { res.status(404).json({ error: 'Not found' }); return; }
     blockSelfApproval(req.user!.id, po.requesterId);
@@ -118,15 +151,115 @@ router.post('/:id/reject', requireAuth, async (req: AuthRequest, res, next) => {
   } catch (err) { next(err); }
 });
 
+// FR-6.4 AC2: return for edit
 router.post('/:id/return', requireAuth, async (req: AuthRequest, res, next) => {
   try {
+    const { reason } = req.body;
     const po = await prisma.purchaseOrder.findUnique({ where: { id: req.params.id } });
     if (!po) { res.status(404).json({ error: 'Not found' }); return; }
     const updated = await prisma.purchaseOrder.update({
       where: { id: po.id },
-      data: { status: POStatus.RETURNED },
+      data: { status: POStatus.RETURNED, rejectReason: reason ?? 'Returned for edit' },
     });
+    await writeAudit(req.user!.id, 'PO_RETURNED', 'PurchaseOrder', po.id, { reason });
     res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// FR-6.4 AC3: mark sent to vendor — only APPROVED POs
+router.post('/:id/send', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: req.params.id } });
+    if (!po) { res.status(404).json({ error: 'Not found' }); return; }
+    if (po.status !== POStatus.APPROVED) {
+      res.status(400).json({ error: 'Only approved POs can be sent to vendor (FR-6.4 AC3)' }); return;
+    }
+    const updated = await prisma.purchaseOrder.update({
+      where: { id: po.id },
+      data: { status: POStatus.SENT_TO_VENDOR },
+    });
+    await writeAudit(req.user!.id, 'PO_SENT_TO_VENDOR', 'PurchaseOrder', po.id, { poNumber: po.poNumber });
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// FR-6.5: Amend an APPROVED PO — creates a new version snapshot, resets to DRAFT for re-approval
+router.post('/:id/amend', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const po = await prisma.purchaseOrder.findUnique({
+      where: { id: req.params.id },
+      include: { lineItems: true },
+    });
+    if (!po) { res.status(404).json({ error: 'Not found' }); return; }
+
+    // Only APPROVED or SENT_TO_VENDOR POs can be amended
+    if (po.status !== POStatus.APPROVED && po.status !== POStatus.SENT_TO_VENDOR) {
+      res.status(400).json({ error: 'Only approved POs can be amended (FR-6.5)' }); return;
+    }
+
+    const ctx = await getProjectContext(po.projectId);
+    assertCan(req.user!, 'update', ctx ?? undefined);
+
+    const { title, totalAmount, deliveryDate, paymentTerms, amendReason } = req.body;
+    if (!amendReason?.trim()) {
+      res.status(400).json({ error: 'Amendment reason is required (FR-6.5)' }); return;
+    }
+
+    const currentVersion: number = (po as any).version ?? 1;
+
+    // FR-6.5 AC1: snapshot current version into POVersion table (best-effort — table may not exist yet)
+    try {
+      await (prisma as any).pOVersion.create({
+        data: {
+          purchaseOrderId: po.id,
+          version: currentVersion,
+          poNumber: (po as any).poNumber,
+          title: po.title,
+          totalAmount: po.totalAmount,
+          deliveryDate: (po as any).deliveryDate,
+          paymentTerms: (po as any).paymentTerms,
+          status: po.status,
+          amendReason,
+          snapshotAt: new Date(),
+          snapshotById: req.user!.id,
+        },
+      });
+    } catch {
+      // POVersion table not yet migrated — log to audit instead
+      await writeAudit(req.user!.id, 'PO_VERSION_SNAPSHOT', 'PurchaseOrder', po.id, {
+        version: currentVersion,
+        amendReason,
+        prevStatus: po.status,
+        prevAmount: po.totalAmount?.toString(),
+      });
+    }
+
+    const amountChanged = totalAmount != null && BigInt(totalAmount) !== BigInt(po.totalAmount ?? 0);
+
+    // Apply amendments and move back to DRAFT (re-approval required if amount changes, FR-6.5 AC2)
+    const updated = await prisma.purchaseOrder.update({
+      where: { id: po.id },
+      data: {
+        ...(title        && { title }),
+        ...(totalAmount  != null && { totalAmount: BigInt(totalAmount) }),
+        ...(deliveryDate && { deliveryDate: new Date(deliveryDate) }),
+        ...(paymentTerms && { paymentTerms }),
+        // FR-6.5 AC2: if amount changes, requires re-approval
+        status: amountChanged ? POStatus.DRAFT : POStatus.APPROVED,
+        // Bump version counter
+        version: currentVersion + 1,
+      } as any,
+      include: { vendor: true, lineItems: true },
+    });
+
+    await writeAudit(req.user!.id, 'PO_AMENDED', 'PurchaseOrder', po.id, {
+      poNumber: (po as any).poNumber,
+      newVersion: currentVersion + 1,
+      amendReason,
+      amountChanged,
+    });
+
+    res.json({ ...updated, requiresReapproval: amountChanged });
   } catch (err) { next(err); }
 });
 

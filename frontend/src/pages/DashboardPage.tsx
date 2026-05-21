@@ -10,6 +10,7 @@ import { CorporateDashboard } from '@/pages/dashboard/CorporateDashboard';
 import { SuperAdminDashboard } from '@/pages/dashboard/SuperAdminDashboard';
 import { ROLE_LABELS } from '@/lib/roleUtils';
 import { RefreshCw, Upload, Plus } from 'lucide-react';
+import { useProjectContext } from '@/context/ProjectContext';
 
 function greeting() {
   const h = new Date().getHours();
@@ -24,33 +25,51 @@ function todayLabel() {
 
 export function DashboardPage() {
   const { user } = useAuth();
+  const { activeProject } = useProjectContext();
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const load = useCallback(() => {
-    setLoading(true);
-    api<Record<string, unknown>>('/dashboard')
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  }, []);
+          const load = useCallback(() => {
+            setLoading(true);
+            api<Record<string, unknown>>('/dashboard')
+              .then(setData)
+              .catch(() => setData(null))
+              .finally(() => setLoading(false));
+          }, []);
 
-  useEffect(() => { load(); }, [user, load]);
+          useEffect(() => { load(); }, [user, load]);
 
-  if (loading) {
-    return (
-      <div className="space-y-4">
-        <Skeleton className="h-24 w-full" />
-        <Skeleton className="h-48 w-full" />
-      </div>
-    );
-  }
-  if (!data) return <p className="text-vijayanth-danger">Failed to load dashboard. Is the API running on port 3001?</p>;
+          if (loading) {
+            return (
+              <div className="space-y-4">
+                <Skeleton className="h-24 w-full" />
+                <Skeleton className="h-48 w-full" />
+              </div>
+            );
+          }
+          if (!data) return <p className="text-vijayanth-danger">Failed to load dashboard. Is the API running on port 3001?</p>;
 
-  const firstName = user?.name?.split(' ')[0] ?? '';
-  const roleLabel = ROLE_LABELS[user?.role ?? ''] ?? user?.role;
-  const projects = (data.projects as { name: string }[]) ?? [];
-  const subtitle = `${todayLabel()} · ${projects[0]?.name ?? 'Portfolio'} · ${roleLabel}`;
+          const firstName = user?.name?.split(' ')[0] ?? '';
+          const roleLabel = ROLE_LABELS[user?.role ?? ''] ?? user?.role;
+        const projects =
+          (data.projects as {
+            id?: string;
+            name: string;
+          }[]) ?? [];
+
+        const filteredProjects =
+          activeProject
+            ? projects.filter(
+                (p) =>
+                  p.id === activeProject.id
+              )
+            : projects;
+
+        const subtitle =
+        `${todayLabel()} · ${
+          filteredProjects[0]?.name ??
+          'Portfolio'
+        } · ${roleLabel}`;
 
   return (
     <div>

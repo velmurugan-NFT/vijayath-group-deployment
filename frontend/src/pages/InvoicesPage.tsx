@@ -5,26 +5,60 @@ import { formatDate } from '@/lib/formatDate';
 import { PageHeader } from '@/components/PageHeader';
 import { Card } from '@/components/design/Card';
 import { toast } from 'sonner';
+import { useProjectContext } from '@/context/ProjectContext';
 
 type Project = { id: string; name: string; parentId: string | null };
 
 export function InvoicesPage() {
+  const { activeProject } = useProjectContext();
   const [invoices, setInvoices] = useState<Record<string, unknown>[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [form, setForm] = useState({ projectId: '', type: 'PROFORMA', amount: 1500000, milestone: '' });
+  const filteredInvoices = activeProject
+  ? invoices.filter(
+      (i) =>
+        (i.project as { id?: string })?.id ===
+        activeProject.id
+    )
+  : invoices;
+
+const filteredProjects = activeProject
+  ? projects.filter(
+      (p) =>
+        p.id === activeProject.id ||
+        p.parentId === activeProject.id
+    )
+  : projects;
 
   useEffect(() => {
     api<Record<string, unknown>[]>('/invoices').then(setInvoices);
-    // Load ALL projects (both parent and sub) so the user can pick any.
-    // Previously only sub-projects (parentId != null) were shown, and the
-    // default was hardcoded to the first project whose name includes "1 MW" —
-    // both restrictions are removed so every project in scope is selectable.
+   
     api<Project[]>('/projects').then((all) => {
       setProjects(all);
       // Default to the first project so the select is never empty-valued
       if (all.length > 0) setForm((f) => ({ ...f, projectId: all[0].id }));
     });
   }, []);
+  useEffect(() => {
+  if (filteredProjects.length === 0) {
+    setForm((f) => ({
+      ...f,
+      projectId: '',
+    }));
+    return;
+  }
+
+  const exists = filteredProjects.some(
+    (p) => p.id === form.projectId
+  );
+
+  if (!exists) {
+    setForm((f) => ({
+      ...f,
+      projectId: filteredProjects[0].id,
+    }));
+  }
+}, [activeProject, filteredProjects]);
 
   const generate = async () => {
     if (!form.projectId) { toast.error('Select a project first'); return; }
@@ -50,13 +84,13 @@ export function InvoicesPage() {
         >
           <option value="">— select project —</option>
           {/* Parent projects */}
-          {projects.filter((p) => !p.parentId).map((p) => (
+          {filteredProjects.filter((p) => !p.parentId).map((p) => (
             <option key={p.id} value={p.id}>{p.name}</option>
           ))}
           {/* Sub-projects grouped under a divider */}
-          {projects.some((p) => p.parentId) && (
+          {filteredProjects.some((p) => p.parentId) && (
             <optgroup label="Sub-projects">
-              {projects.filter((p) => p.parentId).map((p) => (
+              {filteredProjects.filter((p) => p.parentId).map((p) => (
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </optgroup>
@@ -89,25 +123,56 @@ export function InvoicesPage() {
               <th></th>
             </tr>
           </thead>
-          <tbody>
-            {invoices.map((i) => (
-              <tr key={String(i.id)}>
-                <td className="p-2">{String(i.invoiceNumber)}</td>
-                <td className="p-2">{(i.project as { name: string }).name}</td>
-                <td className="p-2 text-right">{formatINR(i.amount as number)}</td>
-                <td className="p-2">{formatDate(i.issuedAt as string)}</td>
-                <td className="p-2">
-                  <button
-                    type="button"
-                    className="underline text-vijayanth-green text-xs"
-                    onClick={() => apiDownload(`/invoices/${i.id}/pdf`, `${i.invoiceNumber}.pdf`)}
-                  >
-                    PDF
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
+       <tbody>
+
+  {filteredInvoices.map((i) => (
+    <tr key={String(i.id)}>
+      <td className="p-2">
+        {String(i.invoiceNumber)}
+      </td>
+
+      <td className="p-2">
+        {(i.project as { name: string }).name}
+      </td>
+
+      <td className="p-2 text-right">
+        {formatINR(i.amount as number)}
+      </td>
+
+      <td className="p-2">
+        {formatDate(i.issuedAt as string)}
+      </td>
+
+      <td className="p-2">
+        <button
+          type="button"
+          className="underline text-vijayanth-green text-xs"
+          onClick={() =>
+            apiDownload(
+              `/invoices/${i.id}/pdf`,
+              `${i.invoiceNumber}.pdf`
+            )
+          }
+        >
+          PDF
+        </button>
+      </td>
+    </tr>
+  ))}
+
+  {filteredInvoices.length === 0 && (
+    <tr>
+      <td
+        colSpan={5}
+        className="text-center p-6 text-gray-500"
+      >
+        No invoices found
+      </td>
+    </tr>
+  )}
+
+</tbody>
+             
         </table>
       </Card>
     </div>

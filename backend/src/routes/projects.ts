@@ -17,20 +17,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
       orderBy: { name: 'asc' },
     });
 
-    /*
-     * PROJECT_HEAD scoping
-     * --------------------
-     * `projectFilter` already scopes by sector/org for most roles.
-     * For PROJECT_HEAD we go one step further: a project head must only see
-     * projects they have been explicitly assigned to (via ProjectAssignment).
-     *
-     * We post-filter here (rather than inside `projectFilter`) so we don't
-     * have to touch the shared scope helper — keeping all other role paths
-     * completely unchanged.
-     *
-     * The `assignments` relation is already included above, so no extra query
-     * is needed — we just check whether the current user appears in the list.
-     */
+  
     const userId = req.user!.id;
     const role   = req.user!.role;
 
@@ -48,18 +35,8 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
 });
 
 
-/*
- * GET /projects/eligible-heads
- * Returns ALL users with role PROJECT_HEAD regardless of sector.
- *
- * PROJECT_HEAD users are not sector-scoped — they are assigned per-project.
- * Any authenticated user who can create projects (SECTOR_HEAD, SUPER_ADMIN,
- * CORPORATE_OFFICE) needs to see the full list to pick an available head.
- * Scoping happens at the project-assignment level, not user-listing level.
- *
- * This route MUST be declared before /:id so Express does not treat
- * "eligible-heads" as a project ID.
- */
+
+ 
 router.get('/eligible-heads', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const heads = await prisma.user.findMany({
@@ -167,6 +144,23 @@ router.post('/:id/wbs/line-items', requireAuth, async (req: AuthRequest, res, ne
       },
     });
     res.status(201).json({ ...li, categoryName: cat.name });
+  } catch (err) { next(err); }
+});
+
+// PATCH estimated amount on a WBS line item
+router.patch('/:id/wbs/line-items/:lineItemId', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const ctx = await getProjectContext(req.params.id);
+    assertCan(req.user!, 'update', ctx ?? undefined);
+    const { estimated } = req.body;
+    if (estimated == null || isNaN(Number(estimated))) {
+      res.status(400).json({ error: 'estimated is required and must be a number' }); return;
+    }
+    const li = await prisma.wBSLineItem.update({
+      where: { id: req.params.lineItemId },
+      data: { estimated: BigInt(Math.round(Number(estimated))) },
+    });
+    res.json({ ...li, estimated: Number(li.estimated) });
   } catch (err) { next(err); }
 });
 
@@ -288,6 +282,38 @@ router.patch('/:id', requireAuth, async (req: AuthRequest, res) => {
     },
   });
   res.json(project);
+});
+
+
+router.delete('/:id', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const ctx = await getProjectContext(req.params.id);
+    assertCan(req.user!, 'update', ctx ?? undefined);
+
+    // Safety check: block delete if project has approved POs or payments
+    const [approvedPOs, payments] = await Promise.all([
+      prisma.purchaseOrder.count({ where: { projectId: req.params.id, status: 'APPROVED' } }),
+      prisma.paymentRequest.count({ where: { projectId: req.params.id, status: { in: ['APPROVED', 'PAID'] } } }),
+    ]);
+    if (approvedPOs > 0 || payments > 0) {
+      res.status(400).json({
+        error: 'Cannot delete a project with approved purchase orders or payments. Archive it instead.',
+        approvedPOs,
+        payments,
+      });
+      return;
+    }
+
+    // Cascade: delete sub-projects first, then the project itself
+    const subProjects = await prisma.project.findMany({ where: { parentId: req.params.id }, select: { id: true } });
+    for (const sub of subProjects) {
+      await prisma.project.delete({ where: { id: sub.id } });
+    }
+
+    await writeAudit(req.user!.id, 'PROJECT_DELETED', 'Project', req.params.id, {});
+    await prisma.project.delete({ where: { id: req.params.id } });
+    res.status(204).end();
+  } catch (err) { next(err); }
 });
 
 export default router;

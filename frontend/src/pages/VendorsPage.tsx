@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Card } from '@/components/design/Card';
 import { DataTable } from '@/components/DataTable';
 import { toast } from 'sonner';
+import { useProjectContext } from '@/context/ProjectContext';
 
 type Vendor = { id: string; name: string; category: string; gstin?: string; pan?: string; bankAccount?: string };
 type VendorDetail = Vendor & {
@@ -20,11 +21,14 @@ type VendorDetail = Vendor & {
 const empty = { name: '', category: 'EPC', gstin: '', pan: '', bankAccount: '' };
 
 export function VendorsPage() {
+  
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [detail, setDetail] = useState<VendorDetail | null>(null);
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState(empty);
+  const { activeProject } = useProjectContext();
+  
 
   const load = () => api<Vendor[]>('/vendors').then(setVendors);
   useEffect(() => { load(); }, []);
@@ -37,7 +41,12 @@ export function VendorsPage() {
     setForm({ name: v.name, category: v.category, gstin: v.gstin ?? '', pan: v.pan ?? '', bankAccount: v.bankAccount ?? '' });
     setOpen(true);
   };
-
+const filteredPOs = activeProject
+  ? (detail?.purchaseOrders ?? []).filter(
+      (p) =>
+        p.project?.id === activeProject.id
+    )
+  : (detail?.purchaseOrders ?? []);
   const save = async () => {
     if (editId) {
       await api(`/vendors/${editId}`, { method: 'PATCH', body: JSON.stringify(form) });
@@ -65,7 +74,7 @@ export function VendorsPage() {
           keyFn={(v) => v.id}
           onRowClick={(v) => show(v.id)}
         />
-        {detail && (
+       {detail && (
           <div className="card card-pad p-4">
             <h2 className="font-bold text-vijayanth-green text-lg">{detail.name}</h2>
             <p className="text-sm mt-1">Category: {detail.category}</p>
@@ -74,7 +83,7 @@ export function VendorsPage() {
             <p className="text-sm">On-time: {detail.performance?.onTimePercent ?? 0}% · {detail.performance?.poCount ?? 0} POs</p>
             <h3 className="font-semibold mt-4 mb-2">Linked POs</h3>
             <ul className="text-sm space-y-1">
-              {(detail.purchaseOrders ?? []).map((p) => (
+              {filteredPOs.map((p) => (
                 <li key={p.id}>
                   <Link to={`/pos/${p.id}`} className="underline">{p.poNumber}</Link>
                   {' '}{formatINR(p.totalAmount)} — {p.project && <Link to={`/projects/${p.project.id}`} className="underline">{p.project.name}</Link>}

@@ -34,24 +34,42 @@ router.patch('/:id', requireAuth, async (req: AuthRequest, res, next) => {
     const ctx = await getProjectContext(task.projectId);
     assertCan(req.user!, 'update', ctx ?? undefined);
 
-    const { status, remarks } = req.body;
+    const { status, remarks, title, department, plannedEnd, plannedStart } = req.body;
     const today = new Date();
-    const isDelayed = task.plannedEnd && new Date(task.plannedEnd) < today && status === TaskStatus.IN_PROGRESS;
+    const resolvedStatus = status ?? task.status;
+    const resolvedPlannedEnd = plannedEnd ? new Date(plannedEnd) : task.plannedEnd;
+    const isDelayed = resolvedPlannedEnd && resolvedPlannedEnd < today && resolvedStatus === TaskStatus.IN_PROGRESS;
 
     const updated = await prisma.task.update({
       where: { id: req.params.id },
       data: {
-        status: status ?? task.status,
+        ...(title != null && { title }),
+        ...(department != null && { department }),
+        ...(plannedStart != null && { plannedStart: new Date(plannedStart) }),
+        ...(plannedEnd != null && { plannedEnd: new Date(plannedEnd) }),
+        status: resolvedStatus,
         remarks: remarks ?? task.remarks,
         isDelayed: isDelayed ?? task.isDelayed,
         updatedById: req.user!.id,
-        actualStart: status === TaskStatus.IN_PROGRESS && !task.actualStart ? today : task.actualStart,
-        actualEnd: status === TaskStatus.COMPLETED ? today : task.actualEnd,
+        actualStart: resolvedStatus === TaskStatus.IN_PROGRESS && !task.actualStart ? today : task.actualStart,
+        actualEnd: resolvedStatus === TaskStatus.COMPLETED ? today : task.actualEnd,
       },
     });
 
     await writeAudit(req.user!.id, 'TASK_UPDATED', 'Task', task.id, { title: task.title, status });
     res.json(updated);
+  } catch (err) { next(err); }
+});
+
+router.delete('/:id', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const task = await prisma.task.findUnique({ where: { id: req.params.id } });
+    if (!task) { res.status(404).json({ error: 'Not found' }); return; }
+    const ctx = await getProjectContext(task.projectId);
+    assertCan(req.user!, 'update', ctx ?? undefined);
+    await writeAudit(req.user!.id, 'TASK_DELETED', 'Task', task.id, { title: task.title });
+    await prisma.task.delete({ where: { id: req.params.id } });
+    res.status(204).end();
   } catch (err) { next(err); }
 });
 

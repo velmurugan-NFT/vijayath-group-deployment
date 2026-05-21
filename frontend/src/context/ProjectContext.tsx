@@ -1,5 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { api } from '@/lib/api';
 
 export interface ProjectSummary {
@@ -10,7 +9,7 @@ export interface ProjectSummary {
 }
 
 interface ProjectCtx {
-  projects: ProjectSummary[];       // all accessible sub-projects
+  projects: ProjectSummary[];
   activeProject: ProjectSummary | null;
   setActiveProjectId: (id: string | null) => void;
   loading: boolean;
@@ -19,51 +18,35 @@ interface ProjectCtx {
 const ProjectContext = createContext<ProjectCtx | null>(null);
 const STORAGE_KEY = 'vijayanth_active_project';
 
+// ─── helpers ────────────────────────────────────────────────────────────────
+function readStored(): string | null {
+  try { return sessionStorage.getItem(STORAGE_KEY); } catch { return null; }
+}
+function writeStored(id: string | null) {
+  try {
+    if (id) sessionStorage.setItem(STORAGE_KEY, id);
+    else sessionStorage.removeItem(STORAGE_KEY);
+  } catch { /* ignore */ }
+}
+
+// ─── Provider ───────────────────────────────────────────────────────────────
 export function ProjectProvider({ children }: { children: ReactNode }) {
-  const [searchParams, setSearchParams] = useSearchParams();
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [loading, setLoading]   = useState(true);
-
-  // Track whether we've already synced the URL param → sessionStorage on this page load
-  const synced = useRef(false);
-
-  const urlProjectId = searchParams.get('projectId');
-
-  // On first render, if URL carries a projectId, commit it to sessionStorage immediately
-  // so activeId is stable before the async projects list arrives.
-  if (!synced.current && urlProjectId) {
-    sessionStorage.setItem(STORAGE_KEY, urlProjectId);
-    synced.current = true;
-  }
-
-  const storedId = typeof window !== 'undefined' ? sessionStorage.getItem(STORAGE_KEY) : null;
-  // URL param wins over stored; stored wins over nothing
-  const activeId = urlProjectId || storedId;
+  const [loading,  setLoading]  = useState(true);
+  // activeId is the single source of truth — null means "All projects"
+  const [activeId, setActiveIdState] = useState<string | null>(() => readStored());
 
   useEffect(() => {
     api<ProjectSummary[]>('/projects')
-      .then((list) => {
-        // Include ALL projects (parents + sub-projects) so links from project detail pages
-        // always resolve — the detail page passes its own id which may be a parent.
-        setProjects(list);
-      })
+      .then(setProjects)
       .finally(() => setLoading(false));
   }, []);
 
   const activeProject = projects.find((p) => p.id === activeId) ?? null;
 
   const setActiveProjectId = (id: string | null) => {
-    if (id) {
-      sessionStorage.setItem(STORAGE_KEY, id);
-      const next = new URLSearchParams(searchParams);
-      next.set('projectId', id);
-      setSearchParams(next, { replace: true });
-    } else {
-      sessionStorage.removeItem(STORAGE_KEY);
-      const next = new URLSearchParams(searchParams);
-      next.delete('projectId');
-      setSearchParams(next, { replace: true });
-    }
+    writeStored(id);
+    setActiveIdState(id);
   };
 
   return (
@@ -73,13 +56,16 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// ─── hooks ──────────────────────────────────────────────────────────────────
 export function useProjectContext() {
   const ctx = useContext(ProjectContext);
   if (!ctx) throw new Error('useProjectContext outside provider');
   return ctx;
 }
 
+/** Returns the currently active project id (from context state, not URL). */
 export function useProjectIdFromUrl(): string | null {
-  const [params] = useSearchParams();
-  return params.get('projectId') || sessionStorage.getItem(STORAGE_KEY);
+  // Name kept for backwards compatibility with existing callers.
+  // Now simply reads from context instead of URL params.
+  return readStored();
 }
