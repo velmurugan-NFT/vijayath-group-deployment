@@ -519,7 +519,7 @@ export function POPage() {
               <th>Date</th>
               <th className="right">Amount</th>
               <th>Status</th>
-              <th></th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody>

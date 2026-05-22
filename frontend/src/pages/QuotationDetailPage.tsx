@@ -1,8 +1,9 @@
 /**
  * QuotationDetailPage — Steps 2 & 3
+ * Added: Edit & Delete for the Quotation Request and for each vendor quote.
  */
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { formatINR } from '@/lib/formatINR';
 import { formatDate } from '@/lib/formatDate';
@@ -12,6 +13,7 @@ import { toast } from 'sonner';
 import {
   Loader2, Plus, CheckCircle2, AlertTriangle,
   ArrowLeft, Trophy, Building2, Layers, Calendar,
+  Pencil, Trash2, X, Save,
 } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -66,27 +68,145 @@ const emptyQuoteForm = () => ({
   notes:        '',
 });
 
+// ── Confirm Delete Modal ──────────────────────────────────────────────────────
+interface ConfirmDeleteModalProps {
+  title: string;
+  message: React.ReactNode;
+  items?: string[];        // bullet list of things that will be deleted
+  onConfirm: () => void;
+  onCancel: () => void;
+  busy?: boolean;
+}
+
+function ConfirmDeleteModal({ title, message, items, onConfirm, onCancel, busy }: ConfirmDeleteModalProps) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 9999,
+      background: 'rgba(0,0,0,0.45)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: '1rem',
+    }}>
+      <div style={{
+        background: 'var(--surface)',
+        borderRadius: 12,
+        padding: '1.5rem',
+        maxWidth: 440,
+        width: '100%',
+        boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
+        border: '1px solid var(--line)',
+      }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          <div style={{
+            width: 36, height: 36, borderRadius: '50%',
+            background: 'var(--danger-soft, #fee2e2)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          }}>
+            <Trash2 style={{ width: 16, height: 16, color: 'var(--danger, #ef4444)' }} />
+          </div>
+          <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700 }}>{title}</h3>
+        </div>
+
+        {/* Body */}
+        <div style={{ fontSize: '0.875rem', color: 'var(--ink-2)', marginBottom: items ? 10 : 20 }}>
+          {message}
+        </div>
+
+        {/* Bullet list of things deleted */}
+        {items && items.length > 0 && (
+          <ul style={{
+            margin: '0 0 20px 0',
+            paddingLeft: '1.25rem',
+            fontSize: '0.82rem',
+            color: 'var(--danger, #ef4444)',
+            lineHeight: 1.7,
+          }}>
+            {items.map((item, i) => <li key={i}>{item}</li>)}
+          </ul>
+        )}
+
+        {/* Actions */}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn"
+            style={{
+              background: 'var(--danger, #ef4444)',
+              color: '#fff',
+              border: 'none',
+              fontWeight: 600,
+            }}
+            onClick={onConfirm}
+            disabled={busy}
+          >
+            {busy
+              ? <><Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> Deleting…</>
+              : <><Trash2 style={{ width: 13, height: 13 }} /> Yes, delete</>
+            }
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Inline Edit Form styles ───────────────────────────────────────────────────
+const editPanel: React.CSSProperties = {
+  margin: '0 1rem 1rem',
+  padding: '1rem',
+  background: 'var(--surface-2)',
+  borderRadius: 8,
+  border: '1px solid var(--line)',
+};
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 export function QuotationDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
 
   const [qr,           setQr]           = useState<QRDetail | null>(null);
   const [vendors,      setVendors]      = useState<Vendor[]>([]);
   const [loading,      setLoading]      = useState(true);
+
+  // ── Add-quote form ────────────────────────────────────────────────────────
   const [quoteForm,    setQuoteForm]    = useState(emptyQuoteForm());
   const [addingQuote,  setAddingQuote]  = useState(false);
   const [savingQuote,  setSavingQuote]  = useState(false);
-  const [winnerId,     setWinnerId]     = useState('');
-  const [winnerReason, setWinnerReason] = useState('');
+
+  // ── Winner / approve ──────────────────────────────────────────────────────
+  const [winnerId,        setWinnerId]        = useState('');
+  const [winnerReason,    setWinnerReason]    = useState('');
   const [approvingSaving, setApprovingSaving] = useState(false);
 
+  // ── Edit QR ───────────────────────────────────────────────────────────────
+  const [editingQR,    setEditingQR]    = useState(false);
+  const [qrEditForm,   setQrEditForm]   = useState({ title: '', description: '' });
+  const [savingQR,     setSavingQR]     = useState(false);
+
+  // ── Delete QR ─────────────────────────────────────────────────────────────
+  const [confirmDeleteQR, setConfirmDeleteQR] = useState(false);
+  const [deletingQR,      setDeletingQR]      = useState(false);
+
+  // ── Edit quote ────────────────────────────────────────────────────────────
+  const [editingQuoteId,   setEditingQuoteId]   = useState<string | null>(null);
+  const [quoteEditForm,    setQuoteEditForm]    = useState(emptyQuoteForm());
+  const [savingQuoteEdit,  setSavingQuoteEdit]  = useState(false);
+
+  // ── Delete quote ──────────────────────────────────────────────────────────
+  const [confirmDeleteQuoteId, setConfirmDeleteQuoteId] = useState<string | null>(null);
+  const [deletingQuote,        setDeletingQuote]        = useState(false);
+
+  // ── Load ──────────────────────────────────────────────────────────────────
   const load = () => {
     if (!id) return;
     api<QRDetail>(`/quotations/${id}`)
       .then((data) => {
         setQr(data);
-        if (data.winnerId) { setWinnerId(data.winnerId); }
-        if (data.winnerReason) { setWinnerReason(data.winnerReason); }
+        if (data.winnerId)    { setWinnerId(data.winnerId); }
+        if (data.winnerReason){ setWinnerReason(data.winnerReason); }
       })
       .catch(() => toast.error('Could not load quotation request'))
       .finally(() => setLoading(false));
@@ -121,14 +241,14 @@ export function QuotationDetailPage() {
   const selQuote        = quotes.find((q) => q.id === winnerId);
   const isNonLowest     = selQuote != null && selQuote.amount > lowestAmt;
   const existingWinner  = quotes.find((q) => q.isWinner);
-
-  const usedVendorIds    = new Set(quotes.map((q) => q.vendor.id));
+  const usedVendorIds   = new Set(quotes.map((q) => q.vendor.id));
   const availableVendors = vendors.filter((v) => !usedVendorIds.has(v.id));
+  const confirmDeleteQuote = quotes.find((q) => q.id === confirmDeleteQuoteId);
 
-  // ── Save a new vendor quote (Step 2) ─────────────────────────────────────
+  // ── Save new vendor quote (Step 2) ────────────────────────────────────────
   const saveQuote = async () => {
-    if (!quoteForm.vendorId)  { toast.error('Select a vendor'); return; }
-    if (!quoteForm.amount)    { toast.error('Enter the quote amount'); return; }
+    if (!quoteForm.vendorId) { toast.error('Select a vendor'); return; }
+    if (!quoteForm.amount)   { toast.error('Enter the quote amount'); return; }
     setSavingQuote(true);
     try {
       await api(`/quotations/${qr.id}/quotes`, {
@@ -175,21 +295,228 @@ export function QuotationDetailPage() {
     }
   };
 
+  // ── Edit QR ───────────────────────────────────────────────────────────────
+  const openEditQR = () => {
+    setQrEditForm({ title: qr.title, description: qr.description ?? '' });
+    setEditingQR(true);
+  };
+
+  const saveEditQR = async () => {
+    if (!qrEditForm.title.trim()) { toast.error('Title is required'); return; }
+    setSavingQR(true);
+    try {
+      await api(`/quotations/${qr.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          title:       qrEditForm.title.trim(),
+          description: qrEditForm.description.trim() || null,
+        }),
+      });
+      toast.success('Quotation request updated');
+      setEditingQR(false);
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update');
+    } finally {
+      setSavingQR(false);
+    }
+  };
+
+  // ── Delete QR ─────────────────────────────────────────────────────────────
+  const deleteQR = async () => {
+    setDeletingQR(true);
+    try {
+      await api(`/quotations/${qr.id}`, { method: 'DELETE' });
+      toast.success('Quotation request deleted');
+      navigate('/quotations');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete');
+    } finally {
+      setDeletingQR(false);
+      setConfirmDeleteQR(false);
+    }
+  };
+
+  // ── Edit quote ────────────────────────────────────────────────────────────
+  const openEditQuote = (q: SavedQuote) => {
+    setEditingQuoteId(q.id);
+    setQuoteEditForm({
+      vendorId:     q.vendor.id,
+      amount:       String(q.amount),
+      deliveryDays: q.deliveryDays != null ? String(q.deliveryDays) : '',
+      gstPct:       q.gstPct       != null ? String(q.gstPct)       : '',
+      paymentTerms: q.paymentTerms ?? '',
+      notes:        q.notes        ?? '',
+    });
+  };
+
+  const saveEditQuote = async () => {
+    if (!quoteEditForm.amount) { toast.error('Enter the quote amount'); return; }
+    setSavingQuoteEdit(true);
+    try {
+      await api(`/quotations/${qr.id}/quotes/${editingQuoteId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          amount:       Number(quoteEditForm.amount),
+          deliveryDays: quoteEditForm.deliveryDays ? Number(quoteEditForm.deliveryDays) : null,
+          gstPct:       quoteEditForm.gstPct       ? Number(quoteEditForm.gstPct)       : null,
+          paymentTerms: quoteEditForm.paymentTerms  || null,
+          notes:        quoteEditForm.notes         || null,
+        }),
+      });
+      toast.success('Quote updated');
+      setEditingQuoteId(null);
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update quote');
+    } finally {
+      setSavingQuoteEdit(false);
+    }
+  };
+
+  // ── Delete quote ──────────────────────────────────────────────────────────
+  const deleteQuote = async () => {
+    if (!confirmDeleteQuoteId) return;
+    setDeletingQuote(true);
+    try {
+      await api(`/quotations/${qr.id}/quotes/${confirmDeleteQuoteId}`, { method: 'DELETE' });
+      toast.success('Vendor quote deleted');
+      setConfirmDeleteQuoteId(null);
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete quote');
+    } finally {
+      setDeletingQuote(false);
+    }
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div>
+      {/* ── Confirm delete QR modal ── */}
+      {confirmDeleteQR && (
+        <ConfirmDeleteModal
+          title="Delete quotation request?"
+          message={
+            <>Are you sure you want to delete <strong>"{qr.title}"</strong>? This action cannot be undone.</>
+          }
+          items={[
+            `Quotation request: ${qr.title}`,
+            `${quotes.length} vendor quote${quotes.length !== 1 ? 's' : ''} attached to this request`,
+            ...(isSettled ? ['Associated purchase order link will be broken'] : []),
+          ]}
+          onConfirm={deleteQR}
+          onCancel={() => setConfirmDeleteQR(false)}
+          busy={deletingQR}
+        />
+      )}
+
+      {/* ── Confirm delete quote modal ── */}
+      {confirmDeleteQuoteId && confirmDeleteQuote && (
+        <ConfirmDeleteModal
+          title="Delete vendor quote?"
+          message={
+            <>Are you sure you want to remove the quote from <strong>{confirmDeleteQuote.vendor.name}</strong>?</>
+          }
+          items={[
+            `Vendor: ${confirmDeleteQuote.vendor.name}`,
+            `Amount: ${formatINR(confirmDeleteQuote.amount)}`,
+            ...(confirmDeleteQuote.isWinner ? ['⚠ This is the current winner — deleting it will un-settle the request'] : []),
+          ]}
+          onConfirm={deleteQuote}
+          onCancel={() => setConfirmDeleteQuoteId(null)}
+          busy={deletingQuote}
+        />
+      )}
+
       <PageHeader
         title={qr.title}
         subtitle={`${qr.project.name}${qr.lineItem ? ' · ' + qr.lineItem.description : ''}`}
         actions={
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <StatusPill status={qr.status} />
+
+            {/* Edit QR button */}
+            {!isSettled && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={openEditQR}
+                title="Edit quotation request"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+              >
+                <Pencil style={{ width: 13, height: 13 }} /> Edit
+              </button>
+            )}
+
+            {/* Delete QR button */}
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setConfirmDeleteQR(true)}
+              title="Delete this quotation request"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                background: 'var(--danger-soft, #fee2e2)',
+                color: 'var(--danger, #ef4444)',
+                border: '1px solid var(--danger, #ef4444)',
+                fontWeight: 600,
+              }}
+            >
+              <Trash2 style={{ width: 13, height: 13 }} /> Delete
+            </button>
+
             <Link to="/quotations" className="btn btn-ghost">
               <ArrowLeft className="w-3.5 h-3.5" /> Back
             </Link>
           </div>
         }
       />
+
+      {/* ── Inline edit QR form ── */}
+      {editingQR && (
+        <Card className="mb-4" style={{ border: '1.5px solid var(--primary)' }}>
+          <CardHeader
+            title="Edit quotation request"
+            subtitle="Update title and description for this request"
+          />
+          <CardBody>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 540 }}>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Title *</label>
+                <input
+                  value={qrEditForm.title}
+                  onChange={(e) => setQrEditForm({ ...qrEditForm, title: e.target.value })}
+                  placeholder="e.g. PV Modules supply — 1 MW"
+                />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Description / scope</label>
+                <input
+                  value={qrEditForm.description}
+                  onChange={(e) => setQrEditForm({ ...qrEditForm, description: e.target.value })}
+                  placeholder="Specs, quantity, standards, requirements…"
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                <button
+                  type="button" className="btn btn-primary"
+                  disabled={savingQR || !qrEditForm.title.trim()}
+                  onClick={saveEditQR}
+                >
+                  {savingQR
+                    ? <><Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> Saving…</>
+                    : <><Save style={{ width: 13, height: 13 }} /> Save changes</>
+                  }
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={() => setEditingQR(false)}>
+                  <X style={{ width: 13, height: 13 }} /> Cancel
+                </button>
+              </div>
+            </div>
+          </CardBody>
+        </Card>
+      )}
 
       {/* ── Request summary ── */}
       <Card className="mb-4">
@@ -232,13 +559,13 @@ export function QuotationDetailPage() {
       <Card className="mb-4">
         <CardHeader
           title={`Step 2 — Vendor quotes (${quotes.length})`}
-          subtitle="Add one quote per vendor. All quotes are saved here."
+          subtitle="Add one quote per vendor. Edit or delete individual quotes using the action buttons."
           actions={
             !isSettled && (
               <button
                 type="button"
                 className="btn btn-primary btn-sm"
-                onClick={() => { setAddingQuote((v) => !v); setQuoteForm(emptyQuoteForm()); }}
+                onClick={() => { setAddingQuote((v) => !v); setQuoteForm(emptyQuoteForm()); setEditingQuoteId(null); }}
               >
                 <Plus className="w-3.5 h-3.5" />
                 {addingQuote ? 'Cancel' : 'Add vendor quote'}
@@ -249,13 +576,7 @@ export function QuotationDetailPage() {
 
         {/* Add quote form */}
         {addingQuote && !isSettled && (
-          <div style={{
-            margin: '0 1rem 1rem',
-            padding: '1rem',
-            background: 'var(--surface-2)',
-            borderRadius: 8,
-            border: '1px solid var(--line)',
-          }}>
+          <div style={editPanel}>
             <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
               New vendor quote
             </div>
@@ -277,32 +598,28 @@ export function QuotationDetailPage() {
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
                 <label>Amount (₹) *</label>
-                <input
-                  type="number" min="0" placeholder="0"
+                <input type="number" min="0" placeholder="0"
                   value={quoteForm.amount}
                   onChange={(e) => setQuoteForm({ ...quoteForm, amount: e.target.value })}
                 />
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
                 <label>Delivery (days)</label>
-                <input
-                  type="number" min="1" placeholder="30"
+                <input type="number" min="1" placeholder="30"
                   value={quoteForm.deliveryDays}
                   onChange={(e) => setQuoteForm({ ...quoteForm, deliveryDays: e.target.value })}
                 />
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
                 <label>GST %</label>
-                <input
-                  type="number" min="0" max="100" placeholder="18"
+                <input type="number" min="0" max="100" placeholder="18"
                   value={quoteForm.gstPct}
                   onChange={(e) => setQuoteForm({ ...quoteForm, gstPct: e.target.value })}
                 />
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
                 <label>Payment terms</label>
-                <input
-                  placeholder="e.g. 50% advance"
+                <input placeholder="e.g. 50% advance"
                   value={quoteForm.paymentTerms}
                   onChange={(e) => setQuoteForm({ ...quoteForm, paymentTerms: e.target.value })}
                 />
@@ -315,13 +632,9 @@ export function QuotationDetailPage() {
                   onChange={(e) => setQuoteForm({ ...quoteForm, notes: e.target.value })}
                   rows={4}
                   style={{
-                    width: '100%',
-                    minHeight: '100px',
-                    padding: '10px',
-                    border: '1px solid var(--line)',
-                    borderRadius: '6px',
-                    resize: 'vertical',
-                    fontFamily: 'inherit',
+                    width: '100%', minHeight: '100px', padding: '10px',
+                    border: '1px solid var(--line)', borderRadius: '6px',
+                    resize: 'vertical', fontFamily: 'inherit',
                   }}
                 />
               </div>
@@ -337,11 +650,86 @@ export function QuotationDetailPage() {
                   : <><Plus className="w-3.5 h-3.5" /> Save quote</>
                 }
               </button>
-              <button
-                type="button" className="btn btn-ghost"
-                onClick={() => { setAddingQuote(false); setQuoteForm(emptyQuoteForm()); }}
-              >
+              <button type="button" className="btn btn-ghost"
+                onClick={() => { setAddingQuote(false); setQuoteForm(emptyQuoteForm()); }}>
                 Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Edit quote inline form */}
+        {editingQuoteId && (
+          <div style={{ ...editPanel, borderColor: 'var(--primary)' }}>
+            <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
+              Edit vendor quote
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10 }}>
+              {/* vendor is read-only in edit mode */}
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Vendor</label>
+                <input
+                  value={quotes.find((q) => q.id === editingQuoteId)?.vendor.name ?? ''}
+                  readOnly
+                  style={{ background: 'var(--surface-2)', color: 'var(--muted)', cursor: 'not-allowed' }}
+                />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Amount (₹) *</label>
+                <input type="number" min="0"
+                  value={quoteEditForm.amount}
+                  onChange={(e) => setQuoteEditForm({ ...quoteEditForm, amount: e.target.value })}
+                />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Delivery (days)</label>
+                <input type="number" min="1"
+                  value={quoteEditForm.deliveryDays}
+                  onChange={(e) => setQuoteEditForm({ ...quoteEditForm, deliveryDays: e.target.value })}
+                />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>GST %</label>
+                <input type="number" min="0" max="100"
+                  value={quoteEditForm.gstPct}
+                  onChange={(e) => setQuoteEditForm({ ...quoteEditForm, gstPct: e.target.value })}
+                />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Payment terms</label>
+                <input
+                  value={quoteEditForm.paymentTerms}
+                  onChange={(e) => setQuoteEditForm({ ...quoteEditForm, paymentTerms: e.target.value })}
+                />
+              </div>
+              <div className="field" style={{ marginTop: 5, marginBottom: 0 }}>
+                <label>Notes</label>
+                <textarea
+                  value={quoteEditForm.notes}
+                  onChange={(e) => setQuoteEditForm({ ...quoteEditForm, notes: e.target.value })}
+                  rows={4}
+                  style={{
+                    width: '100%', minHeight: '100px', padding: '10px',
+                    border: '1px solid var(--line)', borderRadius: '6px',
+                    resize: 'vertical', fontFamily: 'inherit',
+                  }}
+                />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <button
+                type="button" className="btn btn-primary"
+                disabled={savingQuoteEdit || !quoteEditForm.amount}
+                onClick={saveEditQuote}
+              >
+                {savingQuoteEdit
+                  ? <><Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> Saving…</>
+                  : <><Save style={{ width: 13, height: 13 }} /> Save changes</>
+                }
+              </button>
+              <button type="button" className="btn btn-ghost"
+                onClick={() => setEditingQuoteId(null)}>
+                <X style={{ width: 13, height: 13 }} /> Cancel
               </button>
             </div>
           </div>
@@ -358,7 +746,6 @@ export function QuotationDetailPage() {
               <table className="tbl">
                 <thead>
                   <tr>
-                    {/* Checkbox column header — only shown when not settled */}
                     {!isSettled && (
                       <th style={{ width: 40, textAlign: 'center' }}>Select</th>
                     )}
@@ -369,12 +756,15 @@ export function QuotationDetailPage() {
                     <th>Payment terms</th>
                     <th>Notes</th>
                     <th>Status</th>
+                    {/* Actions column */}
+                    {!isSettled && <th style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>Actions</th>}
                   </tr>
                 </thead>
                 <tbody>
                   {quotes.map((q) => {
-                    const isLowest   = q.amount === lowestAmt && quotes.length > 1;
-                    const isChecked  = winnerId === q.id;
+                    const isLowest  = q.amount === lowestAmt && quotes.length > 1;
+                    const isChecked = winnerId === q.id;
+                    const isEditing = editingQuoteId === q.id;
                     return (
                       <tr
                         key={q.id}
@@ -383,31 +773,23 @@ export function QuotationDetailPage() {
                             ? 'var(--green-50)'
                             : isChecked
                             ? 'var(--surface-2)'
+                            : isEditing
+                            ? 'var(--primary-soft, #eff6ff)'
                             : undefined,
-                          // keep pointer only on the data cells, not the checkbox cell
                         }}
                       >
-                        {/* ── Checkbox cell ── */}
+                        {/* Checkbox */}
                         {!isSettled && (
-                          <td
-                            style={{ textAlign: 'center', verticalAlign: 'middle' }}
-                            // stop row-click propagation if any parent has onClick
-                            onClick={(e) => e.stopPropagation()}
-                          >
+                          <td style={{ textAlign: 'center', verticalAlign: 'middle' }}
+                            onClick={(e) => e.stopPropagation()}>
                             <input
                               type="checkbox"
                               checked={isChecked}
                               onChange={() => {
-                                // act as a radio: clicking an already-checked box deselects
                                 setWinnerId(isChecked ? '' : q.id);
                                 if (isChecked) setWinnerReason('');
                               }}
-                              style={{
-                                width: 16,
-                                height: 16,
-                                accentColor: 'var(--primary)',
-                                cursor: 'pointer',
-                              }}
+                              style={{ width: 16, height: 16, accentColor: 'var(--primary)', cursor: 'pointer' }}
                             />
                           </td>
                         )}
@@ -439,6 +821,49 @@ export function QuotationDetailPage() {
                             <span className="pill pill-neutral"><span className="dot" />Quoted</span>
                           )}
                         </td>
+
+                        {/* ── Actions column ── */}
+                        {!isSettled && (
+                          <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}
+                            onClick={(e) => e.stopPropagation()}>
+                            <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+                              {/* Edit */}
+                              <button
+                                type="button"
+                                title="Edit this quote"
+                                onClick={() => isEditing ? setEditingQuoteId(null) : openEditQuote(q)}
+                                style={{
+                                  display: 'inline-flex', alignItems: 'center', gap: 3,
+                                  padding: '3px 8px', borderRadius: 5, border: '1px solid var(--line)',
+                                  background: isEditing ? 'var(--primary)' : 'var(--surface)',
+                                  color: isEditing ? '#fff' : 'var(--ink)',
+                                  cursor: 'pointer', fontSize: '0.76rem', fontWeight: 600,
+                                }}
+                              >
+                                <Pencil style={{ width: 11, height: 11 }} />
+                                {isEditing ? 'Editing' : 'Edit'}
+                              </button>
+
+                              {/* Delete */}
+                              <button
+                                type="button"
+                                title="Delete this quote"
+                                onClick={() => setConfirmDeleteQuoteId(q.id)}
+                                style={{
+                                  display: 'inline-flex', alignItems: 'center', gap: 3,
+                                  padding: '3px 8px', borderRadius: 5,
+                                  border: '1px solid var(--danger, #ef4444)',
+                                  background: 'var(--danger-soft, #fee2e2)',
+                                  color: 'var(--danger, #ef4444)',
+                                  cursor: 'pointer', fontSize: '0.76rem', fontWeight: 600,
+                                }}
+                              >
+                                <Trash2 style={{ width: 11, height: 11 }} />
+                                Delete
+                              </button>
+                            </div>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
@@ -465,7 +890,6 @@ export function QuotationDetailPage() {
               </p>
             ) : (
               <>
-                {/* Non-lowest warning + reason */}
                 {isNonLowest && (
                   <div style={{
                     display: 'flex', gap: 10, alignItems: 'flex-start',
@@ -507,7 +931,8 @@ export function QuotationDetailPage() {
                       : <><CheckCircle2 className="w-3.5 h-3.5" /> Approve &amp; create PO</>
                     }
                   </button>
-                  <button type="button" className="btn btn-ghost" onClick={() => { setWinnerId(''); setWinnerReason(''); }}>
+                  <button type="button" className="btn btn-ghost"
+                    onClick={() => { setWinnerId(''); setWinnerReason(''); }}>
                     Clear selection
                   </button>
                 </div>
@@ -542,7 +967,8 @@ export function QuotationDetailPage() {
         </Card>
       )}
 
-      <Link to="/quotations" className="btn btn-link btn-sm" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      <Link to="/quotations" className="btn btn-link btn-sm"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
         <ArrowLeft className="w-3.5 h-3.5" /> Back to POs &amp; Quotes
       </Link>
     </div>

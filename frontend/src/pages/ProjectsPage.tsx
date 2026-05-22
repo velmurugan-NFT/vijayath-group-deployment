@@ -384,6 +384,8 @@ export function ProjectsPage() {
               <th className="right">Billable</th>
               <th className="right">Net cost</th>
               <th className="right">Profit</th>
+               <th className="right">Action</th>
+
               <th style={{ width: canCreate ? 160 : 80 }}></th>
             </tr>
           </thead>

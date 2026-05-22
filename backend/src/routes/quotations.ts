@@ -48,23 +48,17 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
 // ── GET /quotations/:id  — single QR with all quotes (for detail page) ───────
 router.get('/:id', requireAuth, async (req: AuthRequest, res, next) => {
   try {
-   const item = await prisma.quotationRequest.findUnique({
-  where: {
-    id: req.params.id
-  },
-  include: {
-    project: true,
-    lineItem: true,
-    quotations: {
+    const item = await prisma.quotationRequest.findUnique({
+      where: { id: req.params.id },
       include: {
-        vendor: true
+        project: true,
+        lineItem: true,
+        quotations: {
+          include: { vendor: true },
+          orderBy: { amount: 'asc' },
+        },
       },
-      orderBy: {
-        amount: 'asc'
-      }
-    }
-  }
-})
+    });
     if (!item) { res.status(404).json({ error: 'Not found' }); return; }
     const enriched = {
       ...item,
@@ -107,6 +101,54 @@ router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── PATCH /quotations/:id  — edit title / description of a QR ────────────────
+router.patch('/:id', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const qr = await prisma.quotationRequest.findUnique({ where: { id: req.params.id } });
+    if (!qr) { res.status(404).json({ error: 'Not found' }); return; }
+
+    const ctx = await getProjectContext(qr.projectId);
+    assertCan(req.user!, 'update', ctx ?? undefined);
+
+    const { title, description } = req.body;
+    const updated = await prisma.quotationRequest.update({
+      where: { id: req.params.id },
+      data: {
+        ...(title       !== undefined ? { title }       : {}),
+        ...(description !== undefined ? { description } : {}),
+      },
+      include: { project: true, lineItem: true },
+    });
+
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// ── DELETE /quotations/:id  — delete a QR and all its quotes ─────────────────
+router.delete('/:id', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const qr = await prisma.quotationRequest.findUnique({
+      where:   { id: req.params.id },
+      include: { quotations: true },
+    });
+    if (!qr) { res.status(404).json({ error: 'Not found' }); return; }
+
+    const ctx = await getProjectContext(qr.projectId);
+    assertCan(req.user!, 'delete', ctx ?? undefined);
+
+    // Delete child quotes first (safe even if DB cascades)
+    await prisma.quotation.deleteMany({ where: { requestId: qr.id } });
+    await prisma.quotationRequest.delete({ where: { id: qr.id } });
+
+    await writeAudit(req.user!.id, 'QUOTATION_REQUEST_DELETED', 'QuotationRequest', qr.id, {
+      title:             qr.title,
+      quotationsDeleted: qr.quotations.length,
+    });
+
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
 // ── POST /quotations/:id/quotes  — add a vendor quote to a QR ───────────────
 router.post('/:id/quotes', requireAuth, async (req: AuthRequest, res, next) => {
   try {
@@ -141,6 +183,93 @@ router.post('/:id/quotes', requireAuth, async (req: AuthRequest, res, next) => {
     });
 
     res.status(201).json(unpackQuote(q as unknown as Record<string, unknown>));
+  } catch (err) { next(err); }
+});
+
+// ── PATCH /quotations/:id/quotes/:quoteId  — edit a vendor quote ──────────────
+router.patch('/:id/quotes/:quoteId', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const qr = await prisma.quotationRequest.findUnique({ where: { id: req.params.id } });
+    if (!qr) { res.status(404).json({ error: 'QR not found' }); return; }
+
+    const ctx = await getProjectContext(qr.projectId);
+    assertCan(req.user!, 'update', ctx ?? undefined);
+
+    const existing = await prisma.quotation.findUnique({ where: { id: req.params.quoteId } });
+    if (!existing || existing.requestId !== qr.id) {
+      res.status(404).json({ error: 'Quote not found in this request' });
+      return;
+    }
+
+    const { amount, deliveryDays, gstPct, paymentTerms, notes } = req.body;
+
+    // Re-pack extended fields into the notes JSON blob (same pattern as POST)
+    const notesValue: string | null | undefined =
+      (gstPct != null || paymentTerms != null)
+        ? JSON.stringify({
+            _meta:        true,
+            gstPct:       gstPct        ?? null,
+            paymentTerms: paymentTerms  ?? null,
+            notes:        notes         ?? null,
+          })
+        : (notes !== undefined ? (notes ?? null) : undefined);
+
+    const updated = await prisma.quotation.update({
+      where: { id: req.params.quoteId },
+      data: {
+        ...(amount       !== undefined ? { amount }                    : {}),
+        ...(deliveryDays !== undefined ? { deliveryDays }              : {}),
+        ...(notesValue   !== undefined ? { notes: notesValue }         : {}),
+      },
+      include: { vendor: true },
+    });
+
+    res.json(unpackQuote(updated as unknown as Record<string, unknown>));
+  } catch (err) { next(err); }
+});
+
+// ── DELETE /quotations/:id/quotes/:quoteId  — remove a vendor quote ───────────
+router.delete('/:id/quotes/:quoteId', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const qr = await prisma.quotationRequest.findUnique({ where: { id: req.params.id } });
+    if (!qr) { res.status(404).json({ error: 'QR not found' }); return; }
+
+    const ctx = await getProjectContext(qr.projectId);
+    assertCan(req.user!, 'update', ctx ?? undefined);
+
+    const quote = await prisma.quotation.findUnique({ where: { id: req.params.quoteId } });
+    if (!quote || quote.requestId !== qr.id) {
+      res.status(404).json({ error: 'Quote not found in this request' });
+      return;
+    }
+
+    await prisma.quotation.delete({ where: { id: req.params.quoteId } });
+
+    // If the deleted quote was the winner, clear winner fields and revert status
+    if (quote.isWinner) {
+      const remaining = await prisma.quotation.count({ where: { requestId: qr.id } });
+      await prisma.quotationRequest.update({
+        where: { id: qr.id },
+        data: {
+          status:       remaining > 0
+            ? QuotationRequestStatus.COMPARISON
+            : QuotationRequestStatus.QUOTES_PENDING,
+          winnerId:     null,
+          winnerReason: null,
+        },
+      });
+    } else {
+      // If no quotes remain at all, reset to QUOTES_PENDING
+      const remaining = await prisma.quotation.count({ where: { requestId: qr.id } });
+      if (remaining === 0) {
+        await prisma.quotationRequest.update({
+          where: { id: qr.id },
+          data:  { status: QuotationRequestStatus.QUOTES_PENDING },
+        });
+      }
+    }
+
+    res.json({ success: true });
   } catch (err) { next(err); }
 });
 
@@ -179,8 +308,6 @@ router.post('/:id/select-winner', requireAuth, async (req: AuthRequest, res, nex
     // Create PO in DRAFT
     const count    = await prisma.purchaseOrder.count();
     const poNumber = `PO-2026-${String(count + 1).padStart(3, '0')}`;
-    // FIX: wrap in BigInt so POLineItem.amount is the same type/unit as WBSLineItem.estimated,
-    // preventing false budget-breach warnings (raw number e.g. 9000 vs BigInt estimated 9000000).
     const amount   = BigInt(Math.round(Number(winner.amount)));
 
     const po = await prisma.purchaseOrder.create({
