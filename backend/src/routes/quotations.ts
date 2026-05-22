@@ -179,7 +179,9 @@ router.post('/:id/select-winner', requireAuth, async (req: AuthRequest, res, nex
     // Create PO in DRAFT
     const count    = await prisma.purchaseOrder.count();
     const poNumber = `PO-2026-${String(count + 1).padStart(3, '0')}`;
-    const amount   = winner.amount;
+    // FIX: wrap in BigInt so POLineItem.amount is the same type/unit as WBSLineItem.estimated,
+    // preventing false budget-breach warnings (raw number e.g. 9000 vs BigInt estimated 9000000).
+    const amount   = BigInt(Math.round(Number(winner.amount)));
 
     const po = await prisma.purchaseOrder.create({
       data: {

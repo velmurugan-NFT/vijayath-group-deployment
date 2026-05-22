@@ -967,7 +967,9 @@ function WbsTable({ wbs, projectId, onRefresh }: { wbs: unknown[]; projectId: st
                     <th className="right">Paid</th>
                     <th className="right">Remaining</th>
                     <th>Burn</th>
+                     <th>Action</th>
                     <th style={{ width: 72, textAlign: 'center' }}></th>
+                   
                   </tr>
                 </thead>
                 <tbody>

@@ -605,6 +605,7 @@ export function PendingQuotationsPage() {
                       <th className="right">Vendor quotes</th>
                       <th className="right">Lowest quote</th>
                       <th>Status</th>
+                      <th>Action</th>
                       <th className="right">Action</th>
                     </tr>
                   </thead>

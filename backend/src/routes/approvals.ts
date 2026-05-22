@@ -32,13 +32,21 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
     const poEnriched = await Promise.all(pendingPOs.map(async (po) => {
       const budgetImpact = await Promise.all(po.lineItems.map(async (li) => {
         const line = await prisma.wBSLineItem.findUnique({ where: { id: li.lineItemId } });
+        const committed = N(line?.committed);
+        const estimated = N(line?.estimated);
+        const liAmount  = N(li.amount);
+
+        // PO is PENDING_APPROVAL — not yet approved, so committed does NOT include
+        // this PO's amount yet. Add liAmount to get the true newCommitted.
+        const newCommitted = committed + liAmount;
+
         return {
-          lineItemId: li.lineItemId,
-          description: li.description,
-          currentCommitted: N(line?.committed),
-          newCommitted: N(line?.committed) + N(li.amount),
-          estimated: N(line?.estimated),
-          breach: (N(line?.committed) + N(li.amount)) > N(line?.estimated),
+          lineItemId:       li.lineItemId,
+          description:      li.description,
+          currentCommitted: committed,
+          newCommitted,
+          estimated,
+          breach: newCommitted > estimated,
         };
       }));
       return { type: 'PO' as const, id: po.id, poNumber: po.poNumber, amount: N(po.totalAmount), project: po.project, vendor: po.vendor, requester: po.requester, budgetImpact };

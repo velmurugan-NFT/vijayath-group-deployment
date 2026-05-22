@@ -13,20 +13,39 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const pf = await projectFilter(req.user!);
     const { projectId, department, status } = req.query;
-    const tasks = await prisma.task.findMany({
-      where: {
-        project: pf,
-        ...(projectId ? { projectId: String(projectId) } : {}),
-        ...(department ? { department: String(department) } : {}),
-        ...(status ? { status: String(status) } : {}),
-      },
-      include: { project: true },
-      orderBy: [{ department: 'asc' }, { plannedEnd: 'asc' }],
-    });
-    res.json(tasks);
-  } catch (err) { next(err); }
-});
 
+    const where: any = {
+      project: pf,
+    };
+
+    if (projectId) {
+      where.projectId = String(projectId);
+    }
+
+    if (department) {
+      where.department = String(department);
+    }
+
+    if (status) {
+      where.status = String(status);
+    }
+
+    const tasks = await prisma.task.findMany({
+      where,
+      include: {
+        project: true,
+      },
+      orderBy: [
+        { department: 'asc' },
+        { plannedEnd: 'asc' },
+      ],
+    });
+
+    res.json(tasks);
+  } catch (err) {
+    next(err);
+  }
+});
 router.patch('/:id', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const task = await prisma.task.findUnique({ where: { id: req.params.id }, include: { project: true } });

@@ -11,6 +11,8 @@ import { useProjectIdFromUrl } from '@/context/ProjectContext';
 import { useProjectQuery } from '@/hooks/useProjectQuery';
 import { toast } from 'sonner';
 
+
+
 interface Task {
   id: string;
   title: string;
@@ -54,6 +56,7 @@ export function TasksPage() {
 
   useEffect(() => {
     load();
+    
     api<Project[]>('/projects').then(setProjects);
   }, [pq]);
 

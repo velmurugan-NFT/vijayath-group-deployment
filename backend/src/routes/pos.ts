@@ -11,6 +11,50 @@ import { N } from '../lib/money.js';
 
 const router = Router();
 
+/**
+ * Compute budget impact for a set of PO line items.
+ *
+ * KEY RULE — how `committed` relates to this PO:
+ *
+ *  • PENDING_APPROVAL / DRAFT / RETURNED:
+ *      This PO has NOT been approved yet, so recalcLineItem has never counted it.
+ *      committed (DB) does NOT include li.amount  →  add li.amount to get newCommitted.
+ *
+ *  • APPROVED / SENT_TO_VENDOR:
+ *      recalcLineItem ran after approval and already baked li.amount into committed.
+ *      committed (DB) ALREADY includes li.amount  →  newCommitted = committed (no double-add).
+ *
+ * Without this distinction every approved PO shows a false breach because
+ * the formula counted: committed(already includes 2L) + li.amount(2L) = 4L > estimated(3L).
+ */
+async function buildBudgetImpact(
+  lineItems: { lineItemId: string; description: string; amount: bigint | number }[],
+  poStatus: string,
+) {
+  const alreadyCounted =
+    poStatus === POStatus.APPROVED ||
+    poStatus === POStatus.SENT_TO_VENDOR;
+
+  return Promise.all(lineItems.map(async (li) => {
+    const line = await prisma.wBSLineItem.findUnique({ where: { id: li.lineItemId } });
+    const committed  = N(line?.committed);
+    const estimated  = N(line?.estimated);
+    const liAmount   = N(li.amount);
+
+    // If this PO is already approved, committed already includes liAmount — don't add again.
+    const newCommitted = alreadyCounted ? committed : committed + liAmount;
+
+    return {
+      lineItemId:       li.lineItemId,
+      description:      li.description,
+      currentCommitted: committed,
+      newCommitted,
+      estimated,
+      breach: newCommitted > estimated,
+    };
+  }));
+}
+
 router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const pf = await projectFilter(req.user!);
@@ -34,17 +78,7 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res, next) => {
     const ctx = await getProjectContext(po.projectId);
     assertCan(req.user!, 'read', ctx ?? undefined);
 
-    const budgetImpact = await Promise.all(po.lineItems.map(async (li) => {
-      const line = await prisma.wBSLineItem.findUnique({ where: { id: li.lineItemId } });
-      return {
-        lineItemId: li.lineItemId,
-        description: li.description,
-        currentCommitted: N(line?.committed),
-        newCommitted: N(line?.committed) + N(li.amount),
-        estimated: N(line?.estimated),
-        breach: (N(line?.committed) + N(li.amount)) > N(line?.estimated),
-      };
-    }));
+    const budgetImpact = await buildBudgetImpact(po.lineItems, po.status);
 
     // FR-6.5: include version history
     const versions = await (prisma as any).pOVersion?.findMany?.({
@@ -117,8 +151,10 @@ router.post('/:id/approve', requireAuth, async (req: AuthRequest, res, next) => 
       res.status(403).json({ error: 'Your role cannot approve this amount' }); return;
     }
 
-    const lines = await Promise.all(po.lineItems.map((l) => prisma.wBSLineItem.findUnique({ where: { id: l.lineItemId } })));
-    const hasBreach = po.lineItems.some((l, i) => (N(lines[i]?.committed) + N(l.amount)) > N(lines[i]?.estimated));
+    // PO is still PENDING_APPROVAL here — committed does NOT yet include this PO's amount.
+    // Use buildBudgetImpact with PENDING_APPROVAL so it adds li.amount correctly.
+    const impact = await buildBudgetImpact(po.lineItems, POStatus.PENDING_APPROVAL);
+    const hasBreach = impact.some((b) => b.breach);
     if (hasBreach && !acknowledgeBreach) {
       res.status(400).json({ error: 'Budget breach acknowledgment required', budgetBreach: true }); return;
     }
