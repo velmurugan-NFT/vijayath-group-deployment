@@ -128,7 +128,7 @@ const over60 = filteredData.reduce(
           variant="success"
         />
         <KpiCard label="Outstanding > 60 days"  value={formatINR(over60)}       variant="warning" />
-        <KpiCard label="Projects"               value={String(data.length)} />
+        {/* <KpiCard label="Projects"               value={String(data.length)} /> */}
       </div>
 
       {/* Receivables ageing table */}

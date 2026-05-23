@@ -7,11 +7,9 @@ import { Card } from '@/components/design/Card';
 import { SectionHeader } from '@/components/design/SectionHeader';
 import { FormDialog } from '@/components/FormDialog';
 import { Plus, Trash2 } from 'lucide-react';
-import { useProjectIdFromUrl } from '@/context/ProjectContext';
+import { useProjectIdFromUrl, useProjectContext } from '@/context/ProjectContext';
 import { useProjectQuery } from '@/hooks/useProjectQuery';
 import { toast } from 'sonner';
-
-
 
 interface Task {
   id: string;
@@ -28,7 +26,9 @@ type Project = { id: string; name: string };
 
 export function TasksPage() {
   const projectId = useProjectIdFromUrl();
+  const { activeProject } = useProjectContext();   // ← watch the top-bar selection
   const pq = useProjectQuery();
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<Task | null>(null);
@@ -54,20 +54,22 @@ export function TasksPage() {
 
   const load = () => api<Task[]>(`/tasks${pq}`).then(setTasks);
 
+  // Re-fetch whenever the active project changes (top-bar switch)
   useEffect(() => {
     load();
-    
-    api<Project[]>('/projects').then(setProjects);
-  }, [pq]);
+  }, [activeProject?.id, pq]);  // ← activeProject.id is the key dependency
 
-  // Sync URL-scoped projectId into newTask whenever it changes
   useEffect(() => {
-    if (projectId) {
-      setNewTask((t) => ({ ...t, projectId }));
-    }
-  }, [projectId]);
+    api<Project[]>('/projects').then(setProjects);
+  }, []);
 
-  // When projects load, default to the first project if none selected
+  // Sync active project into the "new task" form
+  useEffect(() => {
+    const pid = activeProject?.id ?? projectId;
+    if (pid) setNewTask((t) => ({ ...t, projectId: pid }));
+  }, [activeProject?.id, projectId]);
+
+  // Default to first project if nothing is selected
   useEffect(() => {
     if (projects.length && !newTask.projectId) {
       setNewTask((t) => ({ ...t, projectId: projects[0].id }));
@@ -119,8 +121,7 @@ export function TasksPage() {
   };
 
   const create = async () => {
-    // Resolve projectId: prefer the form value, fall back to URL context
-    const pid = newTask.projectId || projectId;
+    const pid = newTask.projectId || activeProject?.id || projectId;
     if (!pid) {
       toast.error('Please select a project');
       return;
@@ -140,13 +141,13 @@ export function TasksPage() {
     <div>
       <PageHeader
         title="Tasks"
-        subtitle="Project tasks by department"
+        subtitle={activeProject ? `${activeProject.name} — tasks by department` : 'Project tasks by department'}
         actions={
           <button
             type="button"
             className="btn btn-primary"
             onClick={() => {
-              setNewTask((t) => ({ ...t, projectId: projectId ?? t.projectId }));
+              setNewTask((t) => ({ ...t, projectId: activeProject?.id ?? projectId ?? t.projectId }));
               setCreateOpen(true);
             }}
           >
@@ -167,10 +168,7 @@ export function TasksPage() {
                   <th>Planned end</th>
                   <th>Status</th>
                   <th>Delay</th>
-                  <th style={{ textAlign: 'right', padding: '0.25rem' }}>
-                        Action
-                      </th>
-
+                  <th style={{ textAlign: 'right', padding: '0.25rem' }}>Action</th>
                   <th className="right" />
                 </tr>
               </thead>

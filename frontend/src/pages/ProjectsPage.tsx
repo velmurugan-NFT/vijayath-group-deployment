@@ -375,7 +375,8 @@ export function ProjectsPage() {
       />
 
       <Card>
-        <table className="tbl">
+        {/* FIX: table width 100% to stretch full width; removed duplicate empty <th> */}
+        <table className="tbl" style={{ width: '100%' }}>
           <thead>
             <tr>
               <th style={{ minWidth: 260 }}>Project</th>
@@ -384,14 +385,14 @@ export function ProjectsPage() {
               <th className="right">Billable</th>
               <th className="right">Net cost</th>
               <th className="right">Profit</th>
-               <th className="right">Action</th>
-
-              <th style={{ width: canCreate ? 160 : 80 }}></th>
+              {/* FIX: merged Action header + width into one <th>; removed the extra empty <th> */}
+              <th className="right" style={{ width: canCreate ? 160 : 80 }}>Action</th>
             </tr>
           </thead>
           <tbody>
             {topLevel.map((p) => (
               <Fragment key={p.id}>
+                {/* FIX: removed duplicate <td><ActionButtons /></td> — now only one per row */}
                 <tr className="group-row">
                   <ProjectNameCell project={p} />
                   <td><StatusBadge status={p.status} /></td>

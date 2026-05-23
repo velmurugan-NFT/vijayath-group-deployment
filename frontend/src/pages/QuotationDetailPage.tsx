@@ -38,6 +38,8 @@ interface QRDetail {
   createdAt: string;
   winnerId?: string | null;
   winnerReason?: string | null;
+  purchaseOrderId?: string | null;
+  purchaseOrder?: { id: string } | null;
   project: { id: string; name: string };
   lineItem?: { description: string } | null;
   quotations: SavedQuote[];
@@ -180,6 +182,7 @@ export function QuotationDetailPage() {
   const [winnerId,        setWinnerId]        = useState('');
   const [winnerReason,    setWinnerReason]    = useState('');
   const [approvingSaving, setApprovingSaving] = useState(false);
+  const [existingPoId,    setExistingPoId]    = useState<string | null>(null);
 
   // ── Edit QR ───────────────────────────────────────────────────────────────
   const [editingQR,    setEditingQR]    = useState(false);
@@ -207,6 +210,22 @@ export function QuotationDetailPage() {
         setQr(data);
         if (data.winnerId)    { setWinnerId(data.winnerId); }
         if (data.winnerReason){ setWinnerReason(data.winnerReason); }
+
+        // Resolve the linked PO id — try every field the backend might return
+        const poId = data.purchaseOrderId ?? data.purchaseOrder?.id ?? null;
+        if (poId) {
+          setExistingPoId(poId);
+        } else if (data.status === 'PO_CREATED' || data.status === 'WINNER_SELECTED') {
+          // Backend didn't return the PO id directly — look it up from the PO list
+          api<{ id: string; quotationRequestId?: string; quotationId?: string }[]>('/pos')
+            .then((pos) => {
+              const match = pos.find(
+                (p) => p.quotationRequestId === id || p.quotationId === id
+              );
+              if (match) setExistingPoId(match.id);
+            })
+            .catch(() => {});
+        }
       })
       .catch(() => toast.error('Could not load quotation request'))
       .finally(() => setLoading(false));
@@ -287,7 +306,8 @@ export function QuotationDetailPage() {
         { method: 'POST', body: JSON.stringify({ quotationId: winnerId, reason: winnerReason || undefined }) },
       );
       toast.success(`✓ Approved — PO ${res.purchaseOrder.poNumber} created`);
-      load();
+      setExistingPoId(res.purchaseOrder.id);
+      navigate(`/pos/${res.purchaseOrder.id}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to approve');
     } finally {
@@ -624,20 +644,20 @@ export function QuotationDetailPage() {
                   onChange={(e) => setQuoteForm({ ...quoteForm, paymentTerms: e.target.value })}
                 />
               </div>
-              <div className="field" style={{ marginTop: 5, marginBottom: 0 }}>
-                <label>Notes</label>
-                <textarea
-                  placeholder="Enter quotation remarks..."
-                  value={quoteForm.notes}
-                  onChange={(e) => setQuoteForm({ ...quoteForm, notes: e.target.value })}
-                  rows={4}
-                  style={{
-                    width: '100%', minHeight: '100px', padding: '10px',
-                    border: '1px solid var(--line)', borderRadius: '6px',
-                    resize: 'vertical', fontFamily: 'inherit',
-                  }}
-                />
-              </div>
+            </div>
+            <div className="field" style={{ marginTop: 10, marginBottom: 0 }}>
+              <label>Notes</label>
+              <textarea
+                placeholder="Enter quotation remarks..."
+                value={quoteForm.notes}
+                onChange={(e) => setQuoteForm({ ...quoteForm, notes: e.target.value })}
+                rows={4}
+                style={{
+                  width: '100%', minHeight: '100px', padding: '10px',
+                  border: '1px solid var(--line)', borderRadius: '6px',
+                  resize: 'vertical', fontFamily: 'inherit',
+                }}
+              />
             </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
               <button
@@ -702,19 +722,19 @@ export function QuotationDetailPage() {
                   onChange={(e) => setQuoteEditForm({ ...quoteEditForm, paymentTerms: e.target.value })}
                 />
               </div>
-              <div className="field" style={{ marginTop: 5, marginBottom: 0 }}>
-                <label>Notes</label>
-                <textarea
-                  value={quoteEditForm.notes}
-                  onChange={(e) => setQuoteEditForm({ ...quoteEditForm, notes: e.target.value })}
-                  rows={4}
-                  style={{
-                    width: '100%', minHeight: '100px', padding: '10px',
-                    border: '1px solid var(--line)', borderRadius: '6px',
-                    resize: 'vertical', fontFamily: 'inherit',
-                  }}
-                />
-              </div>
+            </div>
+            <div className="field" style={{ marginTop: 10, marginBottom: 0 }}>
+              <label>Notes</label>
+              <textarea
+                value={quoteEditForm.notes}
+                onChange={(e) => setQuoteEditForm({ ...quoteEditForm, notes: e.target.value })}
+                rows={4}
+                style={{
+                  width: '100%', minHeight: '100px', padding: '10px',
+                  border: '1px solid var(--line)', borderRadius: '6px',
+                  resize: 'vertical', fontFamily: 'inherit',
+                }}
+              />
             </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
               <button
@@ -746,9 +766,6 @@ export function QuotationDetailPage() {
               <table className="tbl">
                 <thead>
                   <tr>
-                    {!isSettled && (
-                      <th style={{ width: 40, textAlign: 'center' }}>Select</th>
-                    )}
                     <th>Vendor</th>
                     <th className="right">Amount</th>
                     <th className="right">GST %</th>
@@ -756,8 +773,8 @@ export function QuotationDetailPage() {
                     <th>Payment terms</th>
                     <th>Notes</th>
                     <th>Status</th>
-                    {/* Actions column */}
                     {!isSettled && <th style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>Actions</th>}
+                    {!isSettled && <th style={{ width: 40, textAlign: 'center' }}>Select</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -778,22 +795,6 @@ export function QuotationDetailPage() {
                             : undefined,
                         }}
                       >
-                        {/* Checkbox */}
-                        {!isSettled && (
-                          <td style={{ textAlign: 'center', verticalAlign: 'middle' }}
-                            onClick={(e) => e.stopPropagation()}>
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={() => {
-                                setWinnerId(isChecked ? '' : q.id);
-                                if (isChecked) setWinnerReason('');
-                              }}
-                              style={{ width: 16, height: 16, accentColor: 'var(--primary)', cursor: 'pointer' }}
-                            />
-                          </td>
-                        )}
-
                         <td className="name-cell" style={{ fontWeight: 600 }}>
                           {q.isWinner && (
                             <Trophy className="w-3.5 h-3.5 inline mr-1" style={{ color: 'var(--gold)' }} />
@@ -862,6 +863,22 @@ export function QuotationDetailPage() {
                                 Delete
                               </button>
                             </div>
+                          </td>
+                        )}
+
+                        {/* ── Select checkbox (last column) ── */}
+                        {!isSettled && (
+                          <td style={{ textAlign: 'center', verticalAlign: 'middle' }}
+                            onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => {
+                                setWinnerId(isChecked ? '' : q.id);
+                                if (isChecked) setWinnerReason('');
+                              }}
+                              style={{ width: 16, height: 16, accentColor: 'var(--primary)', cursor: 'pointer' }}
+                            />
                           </td>
                         )}
                       </tr>
@@ -960,9 +977,32 @@ export function QuotationDetailPage() {
                 <strong>Reason:</strong> {qr.winnerReason}
               </p>
             )}
-            <Link to="/quotations" className="btn btn-primary btn-sm">
-              View Purchase Orders →
-            </Link>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => {
+                if (existingPoId) {
+                  navigate(`/pos/${existingPoId}`);
+                } else {
+                  // existingPoId still resolving — fetch one more time then navigate
+                  api<{ id: string; quotationRequestId?: string; quotationId?: string }[]>('/pos')
+                    .then((pos) => {
+                      const match = pos.find(
+                        (p) => p.quotationRequestId === qr.id || p.quotationId === qr.id
+                      );
+                      if (match) {
+                        setExistingPoId(match.id);
+                        navigate(`/pos/${match.id}`);
+                      } else {
+                        navigate('/pos');
+                      }
+                    })
+                    .catch(() => navigate('/pos'));
+                }
+              }}
+            >
+              View Purchase Order →
+            </button>
           </CardBody>
         </Card>
       )}

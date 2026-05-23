@@ -32,8 +32,7 @@ export function VendorInvoicesPage() {
   const { activeProject } = useProjectContext();
 
   const [items, setItems] = useState<Inv[]>([]);
-  // All approved POs in the current project scope — fetched directly,
-  // not derived from invoices so new POs always appear in the dropdown.
+  // All POs (any status) in the current project scope — all are valid for invoicing.
   const [pos, setPos]     = useState<Po[]>([]);
   const [open, setOpen]   = useState(false);
   const [form, setForm]   = useState({
@@ -47,9 +46,8 @@ export function VendorInvoicesPage() {
 
   useEffect(() => {
     load();
-    // Fetch POs scoped to the active project query; filter to APPROVED only.
-    api<Po[]>(`/pos${pq}`)
-      .then((list) => setPos(list.filter((p) => p.status === 'APPROVED')));
+    // Fetch ALL POs in scope — no status filter, so every PO is available for invoicing.
+    api<Po[]>(`/pos${pq}`).then(setPos);
   }, [pq]);
 
   // Reset selected PO when project scope changes.
@@ -58,14 +56,21 @@ export function VendorInvoicesPage() {
   }, [activeProject?.id]);
 
   const submit = async () => {
-    await api('/vendor-invoices', {
-      method: 'POST',
-      body: JSON.stringify(form),
-    });
-    toast.success('Vendor invoice recorded');
-    setOpen(false);
-    setForm({ poId: '', invoiceNumber: '', amount: 0, invoiceDate: new Date().toISOString().slice(0, 10) });
-    load();
+    if (!form.poId) { toast.error('Select a PO'); return; }
+    if (!form.invoiceNumber.trim()) { toast.error('Enter invoice number'); return; }
+    if (!form.amount) { toast.error('Enter amount'); return; }
+    try {
+      await api('/vendor-invoices', {
+        method: 'POST',
+        body: JSON.stringify(form),
+      });
+      toast.success('Vendor invoice recorded');
+      setOpen(false);
+      setForm({ poId: '', invoiceNumber: '', amount: 0, invoiceDate: new Date().toISOString().slice(0, 10) });
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save invoice');
+    }
   };
 
   return (
@@ -98,31 +103,34 @@ export function VendorInvoicesPage() {
         keyFn={(r) => r.id}
       />
 
-      <FormDialog open={open} onOpenChange={setOpen} title="Vendor invoice" onSubmit={submit}>
+      <FormDialog open={open} onOpenChange={setOpen} title="Add vendor invoice" onSubmit={submit}>
         <div>
-          <Label>PO</Label>
+          <Label>PO *</Label>
           <select
             className="w-full border rounded px-3 py-2 mt-1"
             value={form.poId}
             onChange={(e) => setForm({ ...form, poId: e.target.value })}
           >
-            <option value="">Select PO</option>
+            <option value="">— Select PO —</option>
             {pos.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.poNumber}{p.vendor?.name ? ` — ${p.vendor.name}` : ''}
+                {p.poNumber}{p.vendor?.name ? ` — ${p.vendor.name}` : ''} ({p.status})
               </option>
             ))}
+            {pos.length === 0 && (
+              <option disabled>No POs found for this project</option>
+            )}
           </select>
         </div>
         <div>
-          <Label>Invoice #</Label>
+          <Label>Invoice # *</Label>
           <Input
             value={form.invoiceNumber}
             onChange={(e) => setForm({ ...form, invoiceNumber: e.target.value })}
           />
         </div>
         <div>
-          <Label>Amount (₹)</Label>
+          <Label>Amount (₹) *</Label>
           <Input
             type="number"
             value={form.amount}

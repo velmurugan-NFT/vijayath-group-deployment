@@ -1,15 +1,16 @@
 import { z } from 'zod';
 
 export const vendorSchema = z.object({
-  name: z.string().min(1),
-  category: z.string().min(1),
-  gstin: z.string().optional(),
-  pan: z.string().optional(),
-  bankName: z.string().optional(),
-  accountNo: z.string().optional(),
-  ifsc: z.string().optional(),
-  contact: z.string().optional(),
+  name:      z.string().min(1, 'Name is required'),
+  category:  z.string().min(1, 'Category is required'),
+  gstin:     z.string().optional(),
+  pan:       z.string().optional(),
+  bankName:  z.string().optional(),   // ← was "bankAccount" before — now matches Prisma
+  accountNo: z.string().optional(),   // ← new field matching Prisma
+  ifsc:      z.string().optional(),   // ← new field matching Prisma
+  contact:   z.string().optional(),
 });
+ 
 
 export const taskCreateSchema = z.object({
   projectId: z.string(),

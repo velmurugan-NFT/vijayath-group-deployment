@@ -20,119 +20,150 @@ function auditFilter(user: UserWithScope) {
 
 router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
   try {
-  const user = req.user!;
-  const pf = await projectFilter(user);
-  const scope = projectScope(pf);
-  const projects = await prisma.project.findMany({
-    where: { ...pf, parentId: { not: null } },
-    include: { sector: true, wbsLineItems: true, tasks: true, customerReceipts: true, customerInvoices: true },
-  });
+    const user = req.user!;
+    const pf   = await projectFilter(user);
 
-  const delayedTasks = await prisma.task.findMany({
-    where: { isDelayed: true, ...scope },
-    include: { project: true },
-    take: 10,
-  });
+    // ── Respect ?projectId= from the top-bar selector ──────────────────────
+    const requestedProjectId = req.query.projectId as string | undefined;
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-
-  const todaysTasks = await prisma.task.findMany({
-    where: {
-      ...scope,
-      plannedEnd: { gte: today, lt: tomorrow },
-      status: { in: [TaskStatus.IN_PROGRESS, TaskStatus.NOT_STARTED] },
-    },
-    include: { project: true },
-    take: 10,
-  });
-
-  const pendingPOs = await prisma.purchaseOrder.findMany({
-    where: { status: POStatus.PENDING_APPROVAL, ...scope },
-    include: { vendor: true, project: true, requester: true },
-  });
-
-  const pendingPayments = await prisma.paymentRequest.findMany({
-    where: { status: PaymentRequestStatus.PENDING_APPROVAL, ...scope },
-    include: { po: { include: { vendor: true } }, project: true, requester: true },
-  });
-
-  const recentAudit = await prisma.auditLog.findMany({
-    orderBy: { createdAt: 'desc' },
-    take: 8,
-    include: { user: true },
-    where: auditFilter(user),
-  });
-
-  let portfolio = null;
-  if (user.role === Role.CORPORATE_OFFICE || user.role === Role.SUPER_ADMIN) {
-    const all = await prisma.project.findMany({ where: { parentId: { not: null } } });
-    portfolio = {
-      totalBillable: sumAmounts(all.map((p) => p.billable)),
-      totalCost: sumAmounts(all.map((p) => p.netCost)),
-      totalProfit: sumAmounts(all.map((p) => p.profit)),
-      projectCount: all.length,
+    // Base project WHERE: role-scoped, optionally narrowed to a single project
+    const projectWhere = {
+      ...pf,
+      parentId: { not: null },
+      ...(requestedProjectId ? { id: requestedProjectId } : {}),
     };
-  }
 
-  const receivables = projects.map((p) => {
-    const received = sumAmounts(p.customerReceipts.map((r) => r.amount));
-    const billable = N(p.billable);
-    return { projectId: p.id, name: p.name, billable, received, balance: billable - received };
-  });
+    // Task / PO / payment scope: same narrowing
+    const scope = requestedProjectId
+      ? { project: { ...pf, id: requestedProjectId } }
+      : projectScope(pf);
 
-  const heatmap = projects.map((p) => {
-    const estimated = sumAmounts(p.wbsLineItems.map((l) => l.estimated));
-    const paid = sumAmounts(p.wbsLineItems.map((l) => l.paid));
-    const committed = sumAmounts(p.wbsLineItems.map((l) => l.committed));
-    return {
-      id: p.id, name: p.name, status: p.status,
-      delayedCount: p.tasks.filter((t) => t.isDelayed).length,
-      profit: N(p.profit), billable: N(p.billable),
-      estimated, paid, committed,
-      variancePct: estimated > 0 ? Math.round(((committed - estimated) / estimated) * 100) : 0,
-    };
-  });
-
-  let systemStats = null;
-  if (user.role === Role.SUPER_ADMIN) {
-    const users = await prisma.user.groupBy({ by: ['role'], _count: true });
-    const auditToday = await prisma.auditLog.count({
-      where: { createdAt: { gte: today } },
+    const projects = await prisma.project.findMany({
+      where: projectWhere,
+      include: {
+        sector: true,
+        wbsLineItems: true,
+        tasks: true,
+        customerReceipts: true,
+        customerInvoices: true,
+      },
     });
-    systemStats = { usersByRole: users, auditToday };
-  }
 
-  const primary = projects[0];
-  const budgetSummary = primary ? {
-    estimated: sumAmounts(primary.wbsLineItems.map((l) => l.estimated)),
-    paid: sumAmounts(primary.wbsLineItems.map((l) => l.paid)),
-    committed: sumAmounts(primary.wbsLineItems.map((l) => l.committed)),
-    receivableBalance: receivables.find((r) => r.projectId === primary.id)?.balance ?? 0,
-  } : null;
+    const delayedTasks = await prisma.task.findMany({
+      where: { isDelayed: true, ...scope },
+      include: { project: true },
+      take: 10,
+    });
 
-  res.json({
-    role: user.role,
-    projects: projects.map((p) => ({
-      id: p.id, name: p.name, status: p.status, billable: N(p.billable),
-      netCost: N(p.netCost), profit: N(p.profit),
-      paid: sumAmounts(p.wbsLineItems.map((l) => l.paid)),
-      estimated: sumAmounts(p.wbsLineItems.map((l) => l.estimated)),
-      committed: sumAmounts(p.wbsLineItems.map((l) => l.committed)),
-    })),
-    delayedTasks,
-    todaysTasks,
-    pendingPOs: pendingPOs.map((p) => ({ ...p, totalAmount: N(p.totalAmount) })),
-    pendingPayments: pendingPayments.map((p) => ({ ...p, amount: N(p.amount) })),
-    recentAudit,
-    portfolio,
-    receivables,
-    heatmap,
-    systemStats,
-    budgetSummary,
-  });
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const todaysTasks = await prisma.task.findMany({
+      where: {
+        ...scope,
+        plannedEnd: { gte: today, lt: tomorrow },
+        status: { in: [TaskStatus.IN_PROGRESS, TaskStatus.NOT_STARTED] },
+      },
+      include: { project: true },
+      take: 10,
+    });
+
+    const pendingPOs = await prisma.purchaseOrder.findMany({
+      where: { status: POStatus.PENDING_APPROVAL, ...scope },
+      include: { vendor: true, project: true, requester: true },
+    });
+
+    const pendingPayments = await prisma.paymentRequest.findMany({
+      where: { status: PaymentRequestStatus.PENDING_APPROVAL, ...scope },
+      include: { po: { include: { vendor: true } }, project: true, requester: true },
+    });
+
+    const recentAudit = await prisma.auditLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 8,
+      include: { user: true },
+      where: auditFilter(user),
+    });
+
+    // Portfolio summary — only for corporate/admin, always across ALL projects
+    let portfolio = null;
+    if (user.role === Role.CORPORATE_OFFICE || user.role === Role.SUPER_ADMIN) {
+      const all = await prisma.project.findMany({ where: { parentId: { not: null } } });
+      portfolio = {
+        totalBillable:  sumAmounts(all.map((p) => p.billable)),
+        totalCost:      sumAmounts(all.map((p) => p.netCost)),
+        totalProfit:    sumAmounts(all.map((p) => p.profit)),
+        projectCount:   all.length,
+      };
+    }
+
+    const receivables = projects.map((p) => {
+      const received = sumAmounts(p.customerReceipts.map((r) => r.amount));
+      const billable  = N(p.billable);
+      return { projectId: p.id, name: p.name, billable, received, balance: billable - received };
+    });
+
+    const heatmap = projects.map((p) => {
+      const estimated  = sumAmounts(p.wbsLineItems.map((l) => l.estimated));
+      const paid       = sumAmounts(p.wbsLineItems.map((l) => l.paid));
+      const committed  = sumAmounts(p.wbsLineItems.map((l) => l.committed));
+      return {
+        id: p.id, name: p.name, status: p.status,
+        delayedCount: p.tasks.filter((t) => t.isDelayed).length,
+        profit: N(p.profit), billable: N(p.billable),
+        estimated, paid, committed,
+        variancePct: estimated > 0
+          ? Math.round(((committed - estimated) / estimated) * 100)
+          : 0,
+      };
+    });
+
+    let systemStats = null;
+    if (user.role === Role.SUPER_ADMIN) {
+      const users      = await prisma.user.groupBy({ by: ['role'], _count: true });
+      const auditToday = await prisma.auditLog.count({ where: { createdAt: { gte: today } } });
+      systemStats = { usersByRole: users, auditToday };
+    }
+
+    // budgetSummary — use the explicitly requested project if provided,
+    // otherwise fall back to the first project in scope
+    const primary = requestedProjectId
+      ? projects.find((p) => p.id === requestedProjectId) ?? projects[0]
+      : projects[0];
+
+    const budgetSummary = primary ? {
+      estimated:         sumAmounts(primary.wbsLineItems.map((l) => l.estimated)),
+      paid:              sumAmounts(primary.wbsLineItems.map((l) => l.paid)),
+      committed:         sumAmounts(primary.wbsLineItems.map((l) => l.committed)),
+      receivableBalance: receivables.find((r) => r.projectId === primary.id)?.balance ?? 0,
+    } : null;
+
+    res.json({
+      role: user.role,
+      projects: projects.map((p) => ({
+        id:        p.id,
+        name:      p.name,
+        status:    p.status,
+        billable:  N(p.billable),
+        netCost:   N(p.netCost),
+        profit:    N(p.profit),
+        paid:      sumAmounts(p.wbsLineItems.map((l) => l.paid)),
+        estimated: sumAmounts(p.wbsLineItems.map((l) => l.estimated)),
+        committed: sumAmounts(p.wbsLineItems.map((l) => l.committed)),
+      })),
+      delayedTasks,
+      todaysTasks,
+      pendingPOs:      pendingPOs.map((p)      => ({ ...p, totalAmount: N(p.totalAmount) })),
+      pendingPayments: pendingPayments.map((p) => ({ ...p, amount: N(p.amount) })),
+      recentAudit,
+      portfolio,
+      receivables,
+      heatmap,
+      systemStats,
+      budgetSummary,
+    });
   } catch (err) {
     next(err);
   }
