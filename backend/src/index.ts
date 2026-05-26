@@ -49,6 +49,11 @@ app.use(session({
   saveUninitialized: false,
   cookie: { secure: true, httpOnly: true, sameSite: 'none', maxAge: 24 * 60 * 60 * 1000 },
 }));
+// Debug middleware
+app.use((req, res, next) => {
+  console.log(`[${req.method}] ${req.path} | sessionId: ${req.sessionID} | userId: ${(req.session as any).userId}`);
+  next();
+});
 app.use(loadUser);
 
 app.use('/api/auth', authRoutes);

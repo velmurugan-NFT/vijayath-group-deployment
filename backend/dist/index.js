@@ -2458,6 +2458,10 @@ app.use(session({
   saveUninitialized: false,
   cookie: { secure: true, httpOnly: true, sameSite: "none", maxAge: 24 * 60 * 60 * 1e3 }
 }));
+app.use((req, res, next) => {
+  console.log(`[${req.method}] ${req.path} | sessionId: ${req.sessionID} | userId: ${req.session.userId}`);
+  next();
+});
 app.use(loadUser);
 app.use("/api/auth", auth_default);
 app.use("/api/dashboard", dashboard_default);
