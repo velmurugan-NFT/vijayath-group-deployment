@@ -1,37 +1,14 @@
-var __create = Object.create;
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __getProtoOf = Object.getPrototypeOf;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
-  // If the importer is in node compatibility mode or this is not an ESM
-  // file that has been converted to a CommonJS file using a Babel-
-  // compatible transform (i.e. "__esModule" has not been set), then set
-  // "default" to the CommonJS "module.exports" for node compatibility.
-  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
-  mod
-));
-
 // src/index.ts
-var import_express20 = __toESM(require("express"), 1);
-var import_cors = __toESM(require("cors"), 1);
-var import_express_session = __toESM(require("express-session"), 1);
-var import_path3 = __toESM(require("path"), 1);
-var import_fs2 = __toESM(require("fs"), 1);
-var import_url = require("url");
+import express from "express";
+import cors from "cors";
+import session from "express-session";
+import path3 from "path";
+import fs2 from "fs";
+import { fileURLToPath } from "url";
 
 // src/lib/prisma.ts
-var import_client = require("@prisma/client");
-var prisma = new import_client.PrismaClient();
+import { PrismaClient } from "@prisma/client";
+var prisma = new PrismaClient();
 
 // src/middleware/auth.ts
 async function loadUser(req, _res, next) {
@@ -57,16 +34,16 @@ function requireAuth(req, res, next) {
 }
 
 // src/routes/auth.ts
-var import_express = require("express");
-var import_bcrypt = __toESM(require("bcrypt"), 1);
-var router = (0, import_express.Router)();
+import { Router } from "express";
+import bcrypt from "bcrypt";
+var router = Router();
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
   const user = await prisma.user.findUnique({
     where: { email },
     include: { projectAssignments: true }
   });
-  if (!user || !await import_bcrypt.default.compare(password, user.password)) {
+  if (!user || !await bcrypt.compare(password, user.password)) {
     res.status(401).json({ error: "Invalid credentials" });
     return;
   }
@@ -124,7 +101,7 @@ router.post("/demo-switch", requireAuth, async (req, res) => {
 var auth_default = router;
 
 // src/routes/dashboard.ts
-var import_express2 = require("express");
+import { Router as Router2 } from "express";
 
 // src/lib/constants.ts
 var Role = {
@@ -193,7 +170,7 @@ function sumAmounts(values) {
 }
 
 // src/routes/dashboard.ts
-var router2 = (0, import_express2.Router)();
+var router2 = Router2();
 function projectScope(pf) {
   return Object.keys(pf).length > 0 ? { project: pf } : {};
 }
@@ -331,7 +308,7 @@ router2.get("/", requireAuth, async (req, res, next) => {
 var dashboard_default = router2;
 
 // src/routes/projects.ts
-var import_express3 = require("express");
+import { Router as Router3 } from "express";
 
 // src/lib/rbac.ts
 function can(user, action, resource) {
@@ -404,7 +381,7 @@ async function writeAudit(userId, action, entityType, entityId, metadata) {
 }
 
 // src/routes/projects.ts
-var router3 = (0, import_express3.Router)();
+var router3 = Router3();
 router3.get("/", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
@@ -709,8 +686,8 @@ router3.delete("/:id", requireAuth, async (req, res, next) => {
 var projects_default = router3;
 
 // src/routes/tasks.ts
-var import_express4 = require("express");
-var router4 = (0, import_express4.Router)();
+import { Router as Router4 } from "express";
+var router4 = Router4();
 router4.get("/", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
@@ -828,56 +805,56 @@ router4.post("/", requireAuth, async (req, res, next) => {
 var tasks_default = router4;
 
 // src/routes/vendors.ts
-var import_express5 = require("express");
+import { Router as Router5 } from "express";
 
 // src/schemas/index.ts
-var import_zod = require("zod");
-var vendorSchema = import_zod.z.object({
-  name: import_zod.z.string().min(1, "Name is required"),
-  category: import_zod.z.string().min(1, "Category is required"),
-  gstin: import_zod.z.string().optional(),
-  pan: import_zod.z.string().optional(),
-  bankName: import_zod.z.string().optional(),
+import { z } from "zod";
+var vendorSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  category: z.string().min(1, "Category is required"),
+  gstin: z.string().optional(),
+  pan: z.string().optional(),
+  bankName: z.string().optional(),
   // ← was "bankAccount" before — now matches Prisma
-  accountNo: import_zod.z.string().optional(),
+  accountNo: z.string().optional(),
   // ← new field matching Prisma
-  ifsc: import_zod.z.string().optional(),
+  ifsc: z.string().optional(),
   // ← new field matching Prisma
-  contact: import_zod.z.string().optional()
+  contact: z.string().optional()
 });
-var taskCreateSchema = import_zod.z.object({
-  projectId: import_zod.z.string(),
-  title: import_zod.z.string().min(1),
-  department: import_zod.z.string().min(1),
-  status: import_zod.z.string().optional(),
-  plannedStart: import_zod.z.string().optional(),
-  plannedEnd: import_zod.z.string().optional(),
-  remarks: import_zod.z.string().optional()
+var taskCreateSchema = z.object({
+  projectId: z.string(),
+  title: z.string().min(1),
+  department: z.string().min(1),
+  status: z.string().optional(),
+  plannedStart: z.string().optional(),
+  plannedEnd: z.string().optional(),
+  remarks: z.string().optional()
 });
-var projectCreateSchema = import_zod.z.object({
-  name: import_zod.z.string().min(1),
-  templateId: import_zod.z.string().optional(),
-  parentId: import_zod.z.string().optional(),
-  sectorId: import_zod.z.string(),
-  client: import_zod.z.string().optional(),
-  capacityMw: import_zod.z.number().optional(),
-  billable: import_zod.z.number().optional(),
-  projectHeadId: import_zod.z.string().optional()
+var projectCreateSchema = z.object({
+  name: z.string().min(1),
+  templateId: z.string().optional(),
+  parentId: z.string().optional(),
+  sectorId: z.string(),
+  client: z.string().optional(),
+  capacityMw: z.number().optional(),
+  billable: z.number().optional(),
+  projectHeadId: z.string().optional()
 });
-var userCreateSchema = import_zod.z.object({
-  email: import_zod.z.string().email(),
-  name: import_zod.z.string().min(1),
-  role: import_zod.z.enum(["SUPER_ADMIN", "CORPORATE_OFFICE", "SECTOR_HEAD", "PROJECT_HEAD"]),
-  password: import_zod.z.string().min(6).optional(),
-  sectorId: import_zod.z.string().optional().nullable(),
-  projectIds: import_zod.z.array(import_zod.z.string()).optional()
+var userCreateSchema = z.object({
+  email: z.string().email(),
+  name: z.string().min(1),
+  role: z.enum(["SUPER_ADMIN", "CORPORATE_OFFICE", "SECTOR_HEAD", "PROJECT_HEAD"]),
+  password: z.string().min(6).optional(),
+  sectorId: z.string().optional().nullable(),
+  projectIds: z.array(z.string()).optional()
 });
 var userUpdateSchema = userCreateSchema.partial().extend({
-  active: import_zod.z.boolean().optional()
+  active: z.boolean().optional()
 });
 
 // src/routes/vendors.ts
-var router5 = (0, import_express5.Router)();
+var router5 = Router5();
 router5.get("/", requireAuth, async (_req, res, next) => {
   try {
     const vendors = await prisma.vendor.findMany({ orderBy: { name: "asc" } });
@@ -957,8 +934,8 @@ router5.delete("/:id", requireAuth, async (req, res, next) => {
 var vendors_default = router5;
 
 // src/routes/quotations.ts
-var import_express6 = require("express");
-var router6 = (0, import_express6.Router)();
+import { Router as Router6 } from "express";
+var router6 = Router6();
 function unpackQuote(q) {
   if (typeof q.notes === "string") {
     try {
@@ -1271,7 +1248,7 @@ router6.post("/:id/select-winner", requireAuth, async (req, res, next) => {
 var quotations_default = router6;
 
 // src/routes/pos.ts
-var import_express7 = require("express");
+import { Router as Router7 } from "express";
 
 // src/lib/budget.ts
 async function recalcLineItem(lineItemId) {
@@ -1309,7 +1286,7 @@ function canRoleApprove(role, amount) {
 }
 
 // src/routes/pos.ts
-var router7 = (0, import_express7.Router)();
+var router7 = Router7();
 async function buildBudgetImpact(lineItems, poStatus) {
   const alreadyCounted = poStatus === POStatus.APPROVED || poStatus === POStatus.SENT_TO_VENDOR;
   return Promise.all(lineItems.map(async (li) => {
@@ -1587,8 +1564,8 @@ router7.post("/:id/amend", requireAuth, async (req, res, next) => {
 var pos_default = router7;
 
 // src/routes/payments.ts
-var import_express8 = require("express");
-var router8 = (0, import_express8.Router)();
+import { Router as Router8 } from "express";
+var router8 = Router8();
 router8.get("/", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
@@ -1711,9 +1688,9 @@ router8.post("/:id/execute", requireAuth, async (req, res, next) => {
 var payments_default = router8;
 
 // src/routes/invoices.ts
-var import_express9 = require("express");
-var import_pdf_lib = require("pdf-lib");
-var router9 = (0, import_express9.Router)();
+import { Router as Router9 } from "express";
+import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+var router9 = Router9();
 router9.get("/", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
@@ -1765,13 +1742,13 @@ router9.get("/:id/pdf", requireAuth, async (req, res, next) => {
       res.status(404).json({ error: "Not found" });
       return;
     }
-    const pdf = await import_pdf_lib.PDFDocument.create();
+    const pdf = await PDFDocument.create();
     const page = pdf.addPage([595, 842]);
-    const font = await pdf.embedFont(import_pdf_lib.StandardFonts.Helvetica);
-    const bold = await pdf.embedFont(import_pdf_lib.StandardFonts.HelveticaBold);
+    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
     const fmt = (n) => `\u20B9${n.toLocaleString("en-IN")}`;
     let y = 780;
-    page.drawText("VIJAYANTH RENEWABLE ENERGY PROJECTS", { x: 50, y, size: 14, font: bold, color: (0, import_pdf_lib.rgb)(0.075, 0.243, 0.133) });
+    page.drawText("VIJAYANTH RENEWABLE ENERGY PROJECTS", { x: 50, y, size: 14, font: bold, color: rgb(0.075, 0.243, 0.133) });
     y -= 30;
     page.drawText(`${invoice.type} INVOICE`, { x: 50, y, size: 18, font: bold });
     y -= 25;
@@ -1806,8 +1783,8 @@ router9.get("/:id/pdf", requireAuth, async (req, res, next) => {
 var invoices_default = router9;
 
 // src/routes/receipts.ts
-var import_express10 = require("express");
-var router10 = (0, import_express10.Router)();
+import { Router as Router10 } from "express";
+var router10 = Router10();
 router10.get("/receivables", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
@@ -1868,18 +1845,18 @@ router10.post("/", requireAuth, async (req, res, next) => {
 var receipts_default = router10;
 
 // src/routes/documents.ts
-var import_express11 = require("express");
-var import_multer = __toESM(require("multer"), 1);
-var import_path = __toESM(require("path"), 1);
-var import_fs = __toESM(require("fs"), 1);
-var uploadDir = import_path.default.resolve(process.cwd(), "../uploads");
-if (!import_fs.default.existsSync(uploadDir)) import_fs.default.mkdirSync(uploadDir, { recursive: true });
-var storage = import_multer.default.diskStorage({
+import { Router as Router11 } from "express";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+var uploadDir = path.resolve(process.cwd(), "../uploads");
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+var storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
-var upload = (0, import_multer.default)({ storage });
-var router11 = (0, import_express11.Router)();
+var upload = multer({ storage });
+var router11 = Router11();
 router11.get("/", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
@@ -1925,8 +1902,8 @@ router11.get("/:id/download", requireAuth, async (req, res, next) => {
       res.status(404).json({ error: "Not found" });
       return;
     }
-    const fp = import_path.default.join(uploadDir, doc.filepath);
-    if (!import_fs.default.existsSync(fp)) {
+    const fp = path.join(uploadDir, doc.filepath);
+    if (!fs.existsSync(fp)) {
       res.status(404).json({ error: "File missing" });
       return;
     }
@@ -1938,8 +1915,8 @@ router11.get("/:id/download", requireAuth, async (req, res, next) => {
 var documents_default = router11;
 
 // src/routes/grn.ts
-var import_express12 = require("express");
-var router12 = (0, import_express12.Router)();
+import { Router as Router12 } from "express";
+var router12 = Router12();
 router12.get("/", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
@@ -1997,8 +1974,8 @@ router12.post("/", requireAuth, async (req, res, next) => {
 var grn_default = router12;
 
 // src/routes/vendor-invoices.ts
-var import_express13 = require("express");
-var router13 = (0, import_express13.Router)();
+import { Router as Router13 } from "express";
+var router13 = Router13();
 router13.get("/", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
@@ -2039,9 +2016,9 @@ router13.post("/", requireAuth, async (req, res, next) => {
 var vendor_invoices_default = router13;
 
 // src/routes/reports.ts
-var import_express14 = require("express");
-var import_exceljs = __toESM(require("exceljs"), 1);
-var router14 = (0, import_express14.Router)();
+import { Router as Router14 } from "express";
+import ExcelJS from "exceljs";
+var router14 = Router14();
 function parseDate(q, fallback) {
   if (!q) return fallback;
   const d = new Date(String(q));
@@ -2057,7 +2034,7 @@ router14.get("/pl", requireAuth, async (req, res, next) => {
       where: { ...pf, parentId: { not: null } },
       include: { wbsLineItems: true, customerReceipts: true }
     });
-    const wb = new import_exceljs.default.Workbook();
+    const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet("Project P&L");
     ws.columns = [
       { header: "Project", key: "name", width: 30 },
@@ -2090,7 +2067,7 @@ router14.get("/budget-variance", requireAuth, async (req, res, next) => {
       where: { project: pf },
       include: { category: true, project: true }
     });
-    const wb = new import_exceljs.default.Workbook();
+    const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet("Budget Variance");
     ws.columns = [
       { header: "Project", key: "project", width: 25 },
@@ -2128,7 +2105,7 @@ router14.get("/receivables-ageing", requireAuth, async (req, res, next) => {
       where: { ...pf, parentId: { not: null } },
       include: { customerReceipts: true, customerInvoices: true }
     });
-    const wb = new import_exceljs.default.Workbook();
+    const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet("Receivables Ageing");
     ws.columns = [
       { header: "Project", key: "name", width: 30 },
@@ -2159,8 +2136,8 @@ router14.get("/receivables-ageing", requireAuth, async (req, res, next) => {
 var reports_default = router14;
 
 // src/routes/audit.ts
-var import_express15 = require("express");
-var router15 = (0, import_express15.Router)();
+import { Router as Router15 } from "express";
+var router15 = Router15();
 router15.get("/", requireAuth, async (req, res, next) => {
   try {
     assertCan(req.user, "audit:read");
@@ -2197,11 +2174,11 @@ router15.get("/", requireAuth, async (req, res, next) => {
 var audit_default = router15;
 
 // src/routes/settings.ts
-var import_express16 = require("express");
-var import_bcrypt2 = __toESM(require("bcrypt"), 1);
-var import_child_process = require("child_process");
-var import_path2 = __toESM(require("path"), 1);
-var router16 = (0, import_express16.Router)();
+import { Router as Router16 } from "express";
+import bcrypt2 from "bcrypt";
+import { exec } from "child_process";
+import path2 from "path";
+var router16 = Router16();
 router16.get("/users", requireAuth, async (req, res) => {
   assertCan(req.user, "settings:manage");
   const users = await prisma.user.findMany({
@@ -2230,7 +2207,7 @@ router16.patch("/users/:id", requireAuth, async (req, res) => {
 router16.post("/users", requireAuth, async (req, res) => {
   assertCan(req.user, "users:create");
   const { email, name, role, password, sectorId, projectIds } = req.body;
-  const hash = await import_bcrypt2.default.hash(password ?? "demo123", 10);
+  const hash = await bcrypt2.hash(password ?? "demo123", 10);
   const user = await prisma.user.create({
     data: {
       email,
@@ -2291,8 +2268,8 @@ router16.get("/bank-accounts", requireAuth, async (req, res) => {
 });
 router16.post("/reset-demo", requireAuth, async (req, res) => {
   assertCan(req.user, "settings:manage");
-  const root = import_path2.default.resolve(process.cwd(), "..");
-  (0, import_child_process.exec)("npm run db:reset", { cwd: root }, (err) => {
+  const root = path2.resolve(process.cwd(), "..");
+  exec("npm run db:reset", { cwd: root }, (err) => {
     if (err) res.status(500).json({ error: "Reset failed" });
     else res.json({ ok: true, message: "Demo data reset complete" });
   });
@@ -2300,8 +2277,8 @@ router16.post("/reset-demo", requireAuth, async (req, res) => {
 var settings_default = router16;
 
 // src/routes/daily-status.ts
-var import_express17 = require("express");
-var router17 = (0, import_express17.Router)();
+import { Router as Router17 } from "express";
+var router17 = Router17();
 router17.get("/", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
@@ -2372,7 +2349,7 @@ router17.delete("/:id", requireAuth, async (req, res, next) => {
 var daily_status_default = router17;
 
 // src/routes/approvals.ts
-var import_express18 = require("express");
+import { Router as Router18 } from "express";
 
 // src/lib/query.ts
 function projectIdFromQuery(query) {
@@ -2381,7 +2358,7 @@ function projectIdFromQuery(query) {
 }
 
 // src/routes/approvals.ts
-var router18 = (0, import_express18.Router)();
+var router18 = Router18();
 router18.get("/", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
@@ -2437,8 +2414,8 @@ router18.get("/", requireAuth, async (req, res, next) => {
 var approvals_default = router18;
 
 // src/routes/nav.ts
-var import_express19 = require("express");
-var router19 = (0, import_express19.Router)();
+import { Router as Router19 } from "express";
+var router19 = Router19();
 router19.get("/summary", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
@@ -2459,22 +2436,21 @@ router19.get("/summary", requireAuth, async (req, res, next) => {
 var nav_default = router19;
 
 // src/index.ts
-var import_meta = {};
-var __dirname = import_path3.default.dirname((0, import_url.fileURLToPath)(import_meta.url));
-var uploadDir2 = import_path3.default.resolve(__dirname, "../../uploads");
-if (!import_fs2.default.existsSync(uploadDir2)) import_fs2.default.mkdirSync(uploadDir2, { recursive: true });
+var __dirname = path3.dirname(fileURLToPath(import.meta.url));
+var uploadDir2 = path3.resolve(__dirname, "../../uploads");
+if (!fs2.existsSync(uploadDir2)) fs2.mkdirSync(uploadDir2, { recursive: true });
 BigInt.prototype.toJSON = function() {
   return Number(this);
 };
-var app = (0, import_express20.default)();
+var app = express();
 var PORT = process.env.PORT || 3001;
-app.use((0, import_cors.default)({
+app.use(cors({
   origin: process.env.FRONTEND_URL || "http://localhost:5173",
   credentials: true
 }));
-app.use(import_express20.default.json());
-app.use("/uploads", import_express20.default.static(uploadDir2));
-app.use((0, import_express_session.default)({
+app.use(express.json());
+app.use("/uploads", express.static(uploadDir2));
+app.use(session({
   secret: process.env.SESSION_SECRET || "demo-secret",
   resave: false,
   saveUninitialized: false,

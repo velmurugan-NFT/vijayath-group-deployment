@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=../.env src/index.ts",
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/index.js --external:@prisma/client --external:bcrypt --external:express --external:cors --external:express-session --external:multer --external:connect-sqlite3 --external:exceljs --external:pdf-lib --external:zod --external:date-fns",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/index.js --external:@prisma/client --external:bcrypt --external:express --external:cors --external:express-session --external:multer --external:connect-sqlite3 --external:exceljs --external:pdf-lib --external:zod --external:date-fns",
     "start": "node dist/index.js"
   },
   "dependencies": {
