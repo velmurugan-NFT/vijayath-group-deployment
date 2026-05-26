@@ -2454,7 +2454,7 @@ app.use(session({
   secret: process.env.SESSION_SECRET || "demo-secret",
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false, httpOnly: true, maxAge: 24 * 60 * 60 * 1e3 }
+  cookie: { secure: true, httpOnly: true, sameSite: "none", maxAge: 24 * 60 * 60 * 1e3 }
 }));
 app.use(loadUser);
 app.use("/api/auth", auth_default);
