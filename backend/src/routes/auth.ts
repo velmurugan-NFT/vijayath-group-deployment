@@ -16,13 +16,15 @@ router.post('/login', async (req, res) => {
     return;
   }
   req.session.userId = user.id;
-  res.json({
-    id: user.id,
-    email: user.email,
-    name: user.name,
-    role: user.role,
-    sectorId: user.sectorId,
-    projectIds: user.projectAssignments.map((a) => a.projectId),
+  req.session.save(() => {
+    res.json({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      sectorId: user.sectorId,
+      projectIds: user.projectAssignments.map((a) => a.projectId),
+    });
   });
 });
 
@@ -33,8 +35,8 @@ router.post('/logout', (req, res) => {
 router.get('/me', requireAuth, (req: AuthRequest, res) => {
   const u = req.user!;
   res.json({
-   id: u.id, email: (u as any).email, name: (u as any).name, role: u.role,
-sectorId: u.sectorId, projectIds: (u as any).projectIds,
+    id: u.id, email: (u as any).email, name: (u as any).name, role: u.role,
+    sectorId: u.sectorId, projectIds: (u as any).projectIds,
   });
 });
 
@@ -54,9 +56,11 @@ router.post('/demo-switch', requireAuth, async (req: AuthRequest, res) => {
   });
   if (!target) { res.status(404).json({ error: 'User not found' }); return; }
   req.session.userId = target.id;
-  res.json({
-    id: target.id, email: target.email, name: target.name, role: target.role,
-    sectorId: target.sectorId, projectIds: target.projectAssignments.map((a) => a.projectId),
+  req.session.save(() => {
+    res.json({
+      id: target.id, email: target.email, name: target.name, role: target.role,
+      sectorId: target.sectorId, projectIds: target.projectAssignments.map((a) => a.projectId),
+    });
   });
 });
 
