@@ -44,11 +44,11 @@ router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
         receivedAt: new Date(receivedAt),
         notes,
         // FR-6.6 AC2: quality check fields
-        qualityPass:      qualityPass  ?? true,
-        qualityRemark:    qualityRemark ?? null,
+        ...(qualityPass !== undefined && { qualityPass }),
+        ...(qualityRemark !== undefined && { qualityRemark }),
         // FR-6.6 AC1: partial receipt — how much was received this GRN
-        quantityReceived: quantityReceived ?? null,
-        recordedById:     req.user!.id,
+       ...(quantityReceived !== undefined && { quantityReceived }),
+       ...(req.user!.id && { recordedById: req.user!.id }),
       },
       include: { po: { include: { vendor: true, project: true } } },
     });
@@ -56,9 +56,9 @@ router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
     await writeAudit(req.user!.id, 'GRN_RECORDED', 'GRN', grn.id, {
       poId,
       grnNumber,
-      qualityPass: grn.qualityPass,
-      qualityRemark: grn.qualityRemark,
-      quantityReceived: grn.quantityReceived,
+     qualityPass: (grn as any).qualityPass,
+qualityRemark: (grn as any).qualityRemark,
+quantityReceived: (grn as any).quantityReceived,
     });
 
     res.status(201).json(grn);

@@ -16,7 +16,7 @@ export async function getAccessibleProjectIds(user: UserWithScope): Promise<stri
   }
 
   // PROJECT_HEAD (and any other role): start from directly assigned IDs
-  const directIds: string[] = user.projectIds ?? [];
+  const directIds: string[] = (user as any).projectIds ?? [];
   if (directIds.length === 0) return [];
 
   // Fetch those projects to check if any are parents or sub-projects

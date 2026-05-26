@@ -9,7 +9,7 @@ declare module 'express-session' {
 }
 
 export interface AuthRequest extends Request {
-  user?: UserWithScope;
+  user?: UserWithScope & { projectIds?: string[] };
 }
 
 export async function loadUser(req: AuthRequest, _res: Response, next: NextFunction): Promise<void> {
@@ -21,10 +21,10 @@ export async function loadUser(req: AuthRequest, _res: Response, next: NextFunct
   if (user) {
     req.user = {
       ...user,
-      projectIds: user.projectAssignments.map((a) => a.projectId),
-    };
+      projectIds: user.projectAssignments?.map((a: any) => a.projectId) ?? [],
+    } as any;
+    next();
   }
-  next();
 }
 
 export function requireAuth(req: AuthRequest, res: Response, next: NextFunction): void {

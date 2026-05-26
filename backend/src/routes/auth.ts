@@ -33,8 +33,8 @@ router.post('/logout', (req, res) => {
 router.get('/me', requireAuth, (req: AuthRequest, res) => {
   const u = req.user!;
   res.json({
-    id: u.id, email: u.email, name: u.name, role: u.role,
-    sectorId: u.sectorId, projectIds: u.projectIds,
+   id: u.id, email: (u as any).email, name: (u as any).name, role: u.role,
+sectorId: u.sectorId, projectIds: (u as any).projectIds,
   });
 });
 

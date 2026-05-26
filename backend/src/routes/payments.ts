@@ -70,7 +70,7 @@ router.post('/:id/approve', requireAuth, async (req: AuthRequest, res, next) => 
 
     blockSelfApproval(req.user!.id, pr.requesterId);
     const prAmount = N(pr.amount);
-    blockMakerChecker(prAmount, req.user!.id, pr.requesterId);
+  blockMakerChecker(String(prAmount), req.user!.id);
     if (!canRoleApprove(req.user!.role as Role, prAmount)) {
       res.status(403).json({ error: 'Your role cannot approve this amount' });
       return;
