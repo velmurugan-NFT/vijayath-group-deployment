@@ -48,15 +48,13 @@ router.post("/login", async (req, res) => {
     return;
   }
   req.session.userId = user.id;
-  req.session.save(() => {
-    res.json({
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      sectorId: user.sectorId,
-      projectIds: user.projectAssignments.map((a) => a.projectId)
-    });
+  res.json({
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    sectorId: user.sectorId,
+    projectIds: user.projectAssignments.map((a) => a.projectId)
   });
 });
 router.post("/logout", (req, res) => {
