@@ -44,17 +44,30 @@ router.post("/login", async (req, res) => {
     include: { projectAssignments: true }
   });
   if (!user || !await bcrypt.compare(password, user.password)) {
-    res.status(401).json({ error: "Invalid credentials" });
+    res.status(401).json({
+      error: "Invalid credentials"
+    });
     return;
   }
   req.session.userId = user.id;
+  await new Promise((resolve, reject) => {
+    req.session.save((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
   res.json({
     id: user.id,
     email: user.email,
     name: user.name,
     role: user.role,
     sectorId: user.sectorId,
-    projectIds: user.projectAssignments.map((a) => a.projectId)
+    projectIds: user.projectAssignments.map(
+      (a) => a.projectId
+    )
   });
 });
 router.post("/logout", (req, res) => {
@@ -2438,8 +2451,6 @@ router19.get("/summary", requireAuth, async (req, res, next) => {
 var nav_default = router19;
 
 // src/index.ts
-import connectSqlite3 from "connect-sqlite3";
-var SQLiteStore = connectSqlite3(session);
 var __dirname = path3.dirname(fileURLToPath(import.meta.url));
 var uploadDir2 = path3.resolve(__dirname, "../../uploads");
 if (!fs2.existsSync(uploadDir2)) fs2.mkdirSync(uploadDir2, { recursive: true });
@@ -2447,6 +2458,7 @@ BigInt.prototype.toJSON = function() {
   return Number(this);
 };
 var app = express();
+app.set("trust proxy", 1);
 var PORT = process.env.PORT || 3001;
 app.use(cors({
   origin: process.env.FRONTEND_URL || "http://localhost:5173",
@@ -2455,11 +2467,15 @@ app.use(cors({
 app.use(express.json());
 app.use("/uploads", express.static(uploadDir2));
 app.use(session({
-  store: new SQLiteStore({ db: "sessions.db", dir: "/data" }),
   secret: process.env.SESSION_SECRET || "demo-secret",
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: true, httpOnly: true, sameSite: "none", maxAge: 24 * 60 * 60 * 1e3 }
+  cookie: {
+    secure: true,
+    httpOnly: true,
+    sameSite: "none",
+    maxAge: 24 * 60 * 60 * 1e3
+  }
 }));
 app.use((req, res, next) => {
   console.log(`[${req.method}] ${req.path} | sessionId: ${req.sessionID} | userId: ${req.session.userId}`);

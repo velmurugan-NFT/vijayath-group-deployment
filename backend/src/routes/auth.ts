@@ -6,25 +6,49 @@ import { AuthRequest, requireAuth } from '../middleware/auth.js';
 const router = Router();
 
 router.post('/login', async (req, res) => {
+
   const { email, password } = req.body;
+
   const user = await prisma.user.findUnique({
     where: { email },
     include: { projectAssignments: true },
   });
+
   if (!user || !(await bcrypt.compare(password, user.password))) {
-    res.status(401).json({ error: 'Invalid credentials' });
+    res.status(401).json({
+      error: 'Invalid credentials'
+    });
     return;
   }
+
   req.session.userId = user.id;
+
+  await new Promise<void>((resolve, reject) => {
+
+    req.session.save((err) => {
+
+      if (err) {
+        reject(err);
+        return;
+      }
+
+      resolve();
+
+    });
+
+  });
+
   res.json({
-    
     id: user.id,
     email: user.email,
     name: user.name,
     role: user.role,
     sectorId: user.sectorId,
-    projectIds: user.projectAssignments.map((a) => a.projectId),
+    projectIds: user.projectAssignments.map(
+      (a) => a.projectId
+    ),
   });
+
 });
 
 router.post('/logout', (req, res) => {

@@ -24,8 +24,8 @@ import settingsRoutes from './routes/settings.js';
 import dailyStatusRoutes from './routes/daily-status.js';
 import approvalRoutes from './routes/approvals.js';
 import navRoutes from './routes/nav.js';
-import connectSqlite3 from 'connect-sqlite3';
-const SQLiteStore = connectSqlite3(session);
+// import connectSqlite3 from 'connect-sqlite3';
+// const SQLiteStore = connectSqlite3(session);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadDir = path.resolve(__dirname, '../../uploads');
@@ -37,6 +37,7 @@ if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 };
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
 
 app.use(cors({
@@ -46,11 +47,16 @@ app.use(cors({
 app.use(express.json());
 app.use('/uploads', express.static(uploadDir));
 app.use(session({
-  store: new SQLiteStore({ db: 'sessions.db', dir: '/data' }),
   secret: process.env.SESSION_SECRET || 'demo-secret',
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: true, httpOnly: true, sameSite: 'none', maxAge: 24 * 60 * 60 * 1000 },
+
+  cookie: {
+    secure: true,
+    httpOnly: true,
+    sameSite: 'none',
+    maxAge: 24 * 60 * 60 * 1000
+  }
 }));
 // Debug middleware
 app.use((req, res, next) => {
