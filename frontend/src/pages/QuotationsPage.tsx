@@ -125,7 +125,7 @@ export function QuotationsPage() {
     }}
   >
     <PlusCircle className="w-3.5 h-3.5" />
-    New quotation Request
+    New Quotation Request
   </Link>
 }
             />
@@ -145,7 +145,7 @@ export function QuotationsPage() {
                         <th className="right">Vendors quoted</th>
                         <th className="right">Lowest quote</th>
                         <th>Status</th>
-                        <th></th>
+                        <th>Action</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -177,11 +177,11 @@ export function QuotationsPage() {
                             </td>
                             <td>
                               <QRPill status={r.status} />
-                              {winner && (
-                                <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: 2 }}>
-                                  Winner: {winner.vendor.name}
-                                </div>
-                              )}
+                            {winner && (
+                              <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: 2 }}>
+                                Selected: {winner.vendor.name}
+                              </div>
+                            )}
                             </td>
                             <td className="right" onClick={(e) => e.stopPropagation()}>
                               <Link
@@ -226,17 +226,17 @@ export function QuotationsPage() {
               ) : (
                 <div style={scrollWrap}>
                   <table className="tbl">
-                    <thead>
-                      <tr>
-                        <th>PO #</th>
-                        <th>Title</th>
-                        <th>Vendor</th>
-                        <th>Date</th>
-                        <th className="right">Amount</th>
-                        <th>Status</th>
-                        <th></th>
-                      </tr>
-                    </thead>
+                 <thead>
+                  <tr>
+                    <th>PO #</th>
+                    <th>Title</th>
+                    <th>Vendor</th>
+                    <th>Date</th>
+                    <th className="right">Amount</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
                     <tbody>
                       {pos.map((p) => (
                         <tr

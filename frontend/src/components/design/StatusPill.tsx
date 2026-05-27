@@ -12,7 +12,7 @@ const STATUS_PILLS: Record<string, { cls: string; label: string }> = {
   REJECTED:        { cls: 'pill-danger',  label: 'Rejected' },
   PAID:            { cls: 'pill-success', label: 'Paid' },
   RAISED:          { cls: 'pill-info',    label: 'Raised' },
-  IN_EXECUTION:    { cls: 'pill-info',    label: 'In execution' },
+  IN_EXECUTION:    { cls: 'pill-info',    label: 'IN EXECUTION' },
   COMMISSIONING:   { cls: 'pill-gold',    label: 'Commissioning' },
   CONFIRMED:       { cls: 'pill-info',    label: 'Confirmed' },
   RETURNED:        { cls: 'pill-warn',    label: 'Returned' },

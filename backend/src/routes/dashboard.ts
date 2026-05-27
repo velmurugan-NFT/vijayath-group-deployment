@@ -18,6 +18,16 @@ function auditFilter(user: UserWithScope) {
   return {};
 }
 
+// Helper: sum paid/estimated/committed from wbsCategories → lineItems
+function sumWbs(wbsCategories: { lineItems: { estimated: bigint | number; paid: bigint | number; committed: bigint | number }[] }[]) {
+  const items = wbsCategories.flatMap((c) => c.lineItems);
+  return {
+    estimated: sumAmounts(items.map((l) => l.estimated)),
+    paid:      sumAmounts(items.map((l) => l.paid)),
+    committed: sumAmounts(items.map((l) => l.committed)),
+  };
+}
+
 router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const user = req.user!;
@@ -26,10 +36,9 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
     // ── Respect ?projectId= from the top-bar selector ──────────────────────
     const requestedProjectId = req.query.projectId as string | undefined;
 
-    // Base project WHERE: role-scoped, optionally narrowed to a single project
+    // FIX: removed `parentId: { not: null }` — it was excluding top-level projects
     const projectWhere = {
       ...pf,
-      parentId: { not: null },
       ...(requestedProjectId ? { id: requestedProjectId } : {}),
     };
 
@@ -38,11 +47,12 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
       ? { project: { ...pf, id: requestedProjectId } }
       : projectScope(pf);
 
+    // FIX: include wbsCategories → lineItems instead of wbsLineItems (wrong relation name)
     const projects = await prisma.project.findMany({
       where: projectWhere,
       include: {
         sector: true,
-        wbsLineItems: true,
+        wbsCategories: { include: { lineItems: true } },
         tasks: true,
         customerReceipts: true,
         customerInvoices: true,
@@ -60,14 +70,24 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
+    // FIX: broaden "today's tasks" to all active/not-started tasks, not just
+    // those with plannedEnd == today (too strict — most show nothing).
+    // Show tasks that are in-progress OR not-started and plannedEnd <= today (overdue + due today).
     const todaysTasks = await prisma.task.findMany({
       where: {
         ...scope,
-        plannedEnd: { gte: today, lt: tomorrow },
         status: { in: [TaskStatus.IN_PROGRESS, TaskStatus.NOT_STARTED] },
+        OR: [
+          { plannedEnd: { lte: tomorrow } },  // due today or overdue
+          { plannedEnd: null },                // no date set — still relevant
+        ],
       },
       include: { project: true },
-      take: 10,
+      orderBy: [
+        { isDelayed: 'desc' },   // delayed first
+        { plannedEnd: 'asc' },   // then soonest deadline
+      ],
+      take: 20,
     });
 
     const pendingPOs = await prisma.purchaseOrder.findMany({
@@ -90,15 +110,16 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
     // Portfolio summary — only for corporate/admin, always across ALL projects
     let portfolio = null;
     if (user.role === Role.CORPORATE_OFFICE || user.role === Role.SUPER_ADMIN) {
-      const all = await prisma.project.findMany({ where: { parentId: { not: null } } });
+      const all = await prisma.project.findMany({ where: {} });
       portfolio = {
-        totalBillable:  sumAmounts(all.map((p) => p.billable)),
-        totalCost:      sumAmounts(all.map((p) => p.netCost)),
-        totalProfit:    sumAmounts(all.map((p) => p.profit)),
-        projectCount:   all.length,
+        totalBillable: sumAmounts(all.map((p) => p.billable)),
+        totalCost:     sumAmounts(all.map((p) => p.netCost)),
+        totalProfit:   sumAmounts(all.map((p) => p.profit)),
+        projectCount:  all.length,
       };
     }
 
+    // FIX: use sumWbs() helper that reads from wbsCategories → lineItems
     const receivables = projects.map((p) => {
       const received = sumAmounts(p.customerReceipts.map((r) => r.amount));
       const billable  = N(p.billable);
@@ -106,16 +127,15 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
     });
 
     const heatmap = projects.map((p) => {
-      const estimated  = sumAmounts(p.wbsLineItems.map((l) => l.estimated));
-      const paid       = sumAmounts(p.wbsLineItems.map((l) => l.paid));
-      const committed  = sumAmounts(p.wbsLineItems.map((l) => l.committed));
+      const wbs = sumWbs(p.wbsCategories);
       return {
         id: p.id, name: p.name, status: p.status,
         delayedCount: p.tasks.filter((t) => t.isDelayed).length,
-        profit: N(p.profit), billable: N(p.billable),
-        estimated, paid, committed,
-        variancePct: estimated > 0
-          ? Math.round(((committed - estimated) / estimated) * 100)
+        profit:   N(p.profit),
+        billable: N(p.billable),
+        ...wbs,
+        variancePct: wbs.estimated > 0
+          ? Math.round(((wbs.committed - wbs.estimated) / wbs.estimated) * 100)
           : 0,
       };
     });
@@ -127,32 +147,30 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
       systemStats = { usersByRole: users, auditToday };
     }
 
-    // budgetSummary — use the explicitly requested project if provided,
-    // otherwise fall back to the first project in scope
+    // FIX: compute budgetSummary using sumWbs() — wbsLineItems was wrong relation
     const primary = requestedProjectId
       ? projects.find((p) => p.id === requestedProjectId) ?? projects[0]
       : projects[0];
 
     const budgetSummary = primary ? {
-      estimated:         sumAmounts(primary.wbsLineItems.map((l) => l.estimated)),
-      paid:              sumAmounts(primary.wbsLineItems.map((l) => l.paid)),
-      committed:         sumAmounts(primary.wbsLineItems.map((l) => l.committed)),
+      ...sumWbs(primary.wbsCategories),
       receivableBalance: receivables.find((r) => r.projectId === primary.id)?.balance ?? 0,
     } : null;
 
     res.json({
       role: user.role,
-      projects: projects.map((p) => ({
-        id:        p.id,
-        name:      p.name,
-        status:    p.status,
-        billable:  N(p.billable),
-        netCost:   N(p.netCost),
-        profit:    N(p.profit),
-        paid:      sumAmounts(p.wbsLineItems.map((l) => l.paid)),
-        estimated: sumAmounts(p.wbsLineItems.map((l) => l.estimated)),
-        committed: sumAmounts(p.wbsLineItems.map((l) => l.committed)),
-      })),
+      projects: projects.map((p) => {
+        const wbs = sumWbs(p.wbsCategories);
+        return {
+          id:        p.id,
+          name:      p.name,
+          status:    p.status,
+          billable:  N(p.billable),
+          netCost:   N(p.netCost),
+          profit:    N(p.profit),
+          ...wbs,
+        };
+      }),
       delayedTasks,
       todaysTasks,
       pendingPOs:      pendingPOs.map((p)      => ({ ...p, totalAmount: N(p.totalAmount) })),

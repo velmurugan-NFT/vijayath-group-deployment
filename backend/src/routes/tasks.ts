@@ -75,7 +75,7 @@ router.patch('/:id', requireAuth, async (req: AuthRequest, res, next) => {
       },
     });
 
-    await writeAudit(req.user!.id, 'TASK_UPDATED', 'Task', task.id, { title: task.title, status });
+    await writeAudit(req.user!.id, 'TASK_UPDATED', 'Task', task.id, { title: task.title, status, projectId: task.projectId });
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -86,7 +86,7 @@ router.delete('/:id', requireAuth, async (req: AuthRequest, res, next) => {
     if (!task) { res.status(404).json({ error: 'Not found' }); return; }
     const ctx = await getProjectContext(task.projectId);
     assertCan(req.user!, 'update', ctx ?? undefined);
-    await writeAudit(req.user!.id, 'TASK_DELETED', 'Task', task.id, { title: task.title });
+   await writeAudit(req.user!.id, 'TASK_DELETED', 'Task', task.id, { title: task.title, projectId: task.projectId });
     await prisma.task.delete({ where: { id: req.params.id } });
     res.status(204).end();
   } catch (err) { next(err); }
@@ -114,7 +114,7 @@ router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
       },
       include: { project: true },
     });
-    await writeAudit(req.user!.id, 'TASK_CREATED', 'Task', task.id, { title });
+    await writeAudit(req.user!.id, 'TASK_CREATED', 'Task', task.id, { title, projectId });
     res.status(201).json(task);
   } catch (err) { next(err); }
 });

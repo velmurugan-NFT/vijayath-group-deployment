@@ -814,13 +814,13 @@ export function QuotationDetailPage() {
                         <td style={{ fontSize: '0.82rem', color: 'var(--muted)' }}>{q.paymentTerms ?? '—'}</td>
                         <td style={{ fontSize: '0.82rem', color: 'var(--muted)' }}>{q.notes ?? '—'}</td>
                         <td>
-                          {q.isWinner ? (
-                            <span className="pill pill-success"><span className="dot" />Winner</span>
-                          ) : isChecked && !isSettled ? (
-                            <span className="pill pill-info"><span className="dot" />Selected</span>
-                          ) : (
-                            <span className="pill pill-neutral"><span className="dot" />Quoted</span>
-                          )}
+                        {q.isWinner ? (
+                          <span className="pill pill-success"><span className="dot" />Selected</span>
+                        ) : isChecked && !isSettled ? (
+                          <span className="pill pill-info"><span className="dot" />Selected</span>
+                        ) : (
+                          <span className="pill pill-neutral"><span className="dot" />Quoted</span>
+                        )}
                         </td>
 
                         {/* ── Actions column ── */}
@@ -966,7 +966,7 @@ export function QuotationDetailPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
               <Trophy className="w-5 h-5" style={{ color: 'var(--gold)' }} />
               <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>
-                Approved: {existingWinner.vendor.name}
+                Selected: {existingWinner.vendor.name}
               </span>
               <span style={{ color: 'var(--muted)', fontSize: '0.875rem' }}>
                 {formatINR(existingWinner.amount)}

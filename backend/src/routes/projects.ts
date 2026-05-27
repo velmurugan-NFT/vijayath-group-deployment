@@ -17,7 +17,6 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
       orderBy: { name: 'asc' },
     });
 
-  
     const userId = req.user!.id;
     const role   = req.user!.role;
 
@@ -34,9 +33,6 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
   }
 });
 
-
-
- 
 router.get('/eligible-heads', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const heads = await prisma.user.findMany({
@@ -54,6 +50,7 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const ctx = await getProjectContext(req.params.id);
     assertCan(req.user!, 'read', ctx ?? undefined);
+
     const project = await prisma.project.findUnique({
       where: { id: req.params.id },
       include: {
@@ -64,6 +61,7 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res, next) => {
       },
     });
     if (!project) { res.status(404).json({ error: 'Not found' }); return; }
+
     const [tasks, pos, payments, invoices, documents] = await Promise.all([
       prisma.task.count({ where: { projectId: project.id } }),
       prisma.purchaseOrder.count({ where: { projectId: project.id } }),
@@ -74,8 +72,21 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res, next) => {
     const audit = await prisma.auditLog.count({
       where: { entityType: 'Project', entityId: project.id },
     });
+
+    // ── Compute netCost dynamically from WBS paid totals ──────────────────
+    // The stored project.netCost / project.profit columns are never auto-updated
+    // when payments are recorded, so we derive them live from WBS line items.
+    const allLineItems = project.wbsCategories.flatMap((c) => c.lineItems);
+    const computedNetCost = allLineItems.reduce(
+      (sum, li) => sum + BigInt(li.paid ?? 0),
+      BigInt(0)
+    );
+    const computedProfit = BigInt(project.billable ?? 0) - computedNetCost;
+
     res.json({
       ...project,
+      netCost: computedNetCost,  // override stale DB value
+      profit:  computedProfit,   // override stale DB value
       _counts: { tasks, pos, payments, invoices, documents, audit },
     });
   } catch (err) {
@@ -147,20 +158,85 @@ router.post('/:id/wbs/line-items', requireAuth, async (req: AuthRequest, res, ne
   } catch (err) { next(err); }
 });
 
-// PATCH estimated amount on a WBS line item
+// PATCH a WBS line item — supports description, estimated, and categoryName
 router.patch('/:id/wbs/line-items/:lineItemId', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const ctx = await getProjectContext(req.params.id);
     assertCan(req.user!, 'update', ctx ?? undefined);
-    const { estimated } = req.body;
-    if (estimated == null || isNaN(Number(estimated))) {
-      res.status(400).json({ error: 'estimated is required and must be a number' }); return;
+
+    const { description, estimated, categoryName } = req.body;
+
+    // Build update payload
+    const data: Record<string, unknown> = {};
+    if (description != null)                       data.description = description;
+    if (estimated   != null && !isNaN(Number(estimated))) data.estimated = BigInt(Math.round(Number(estimated)));
+
+    // Move to a different category if requested
+    if (categoryName) {
+      let cat = await prisma.wBSCategory.findFirst({
+        where: { projectId: req.params.id, name: categoryName },
+      });
+      if (!cat) {
+        const count = await prisma.wBSCategory.count({ where: { projectId: req.params.id } });
+        cat = await prisma.wBSCategory.create({
+          data: { projectId: req.params.id, name: categoryName, sortOrder: count },
+        });
+      }
+      data.categoryId = cat.id;
     }
+
+    if (Object.keys(data).length === 0) {
+      res.status(400).json({ error: 'Nothing to update' }); return;
+    }
+
     const li = await prisma.wBSLineItem.update({
       where: { id: req.params.lineItemId },
-      data: { estimated: BigInt(Math.round(Number(estimated))) },
+      data,
     });
+
+    // ── Keep project-level netCost & profit in sync ───────────────────────
+    const allItems = await prisma.wBSLineItem.findMany({
+      where: { projectId: req.params.id },
+      select: { paid: true },
+    });
+    const liveNetCost = allItems.reduce((s, i) => s + BigInt(i.paid ?? 0), BigInt(0));
+    const project     = await prisma.project.findUnique({
+      where: { id: req.params.id }, select: { billable: true },
+    });
+    const liveProfit  = BigInt(project?.billable ?? 0) - liveNetCost;
+    await prisma.project.update({
+      where: { id: req.params.id },
+      data: { netCost: liveNetCost, profit: liveProfit },
+    });
+
     res.json({ ...li, estimated: Number(li.estimated) });
+  } catch (err) { next(err); }
+});
+
+// DELETE a WBS line item
+router.delete('/:id/wbs/line-items/:lineItemId', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const ctx = await getProjectContext(req.params.id);
+    assertCan(req.user!, 'update', ctx ?? undefined);
+
+    await prisma.wBSLineItem.delete({ where: { id: req.params.lineItemId } });
+
+    // ── Keep project-level netCost & profit in sync ───────────────────────
+    const allItems = await prisma.wBSLineItem.findMany({
+      where: { projectId: req.params.id },
+      select: { paid: true },
+    });
+    const liveNetCost = allItems.reduce((s, i) => s + BigInt(i.paid ?? 0), BigInt(0));
+    const project     = await prisma.project.findUnique({
+      where: { id: req.params.id }, select: { billable: true },
+    });
+    const liveProfit  = BigInt(project?.billable ?? 0) - liveNetCost;
+    await prisma.project.update({
+      where: { id: req.params.id },
+      data: { netCost: liveNetCost, profit: liveProfit },
+    });
+
+    res.status(204).end();
   } catch (err) { next(err); }
 });
 
@@ -174,17 +250,17 @@ router.post('/:id/wbs/seed-defaults', requireAuth, async (req: AuthRequest, res,
       res.status(400).json({ error: 'Project already has WBS items' }); return;
     }
     const defaults = [
-      { cat: 'Land',                  desc: 'Land acquisition / lease' },
+      { cat: 'Land',                   desc: 'Land acquisition / lease' },
       { cat: '33KV Transmission Line', desc: '33KV transmission line works' },
-      { cat: 'Substation Work',       desc: 'Substation civil & equipment' },
-      { cat: 'Yard & Civil',          desc: 'Yard grading, roads & civil foundation' },
-      { cat: 'Yard Products',         desc: 'Transformer, HT Breaker, LT Panel, Inverter' },
-      { cat: 'Panel',                 desc: 'PV Modules supply' },
-      { cat: 'MMS & Module Erection', desc: 'MMS structures & module mounting labour' },
-      { cat: 'DC & AC Cabling',       desc: 'DC string cables, AC power cables, earthing' },
-      { cat: 'Infrastructure',        desc: 'Fencing, CCTV, street lights, security room' },
-      { cat: 'Liaisoning',            desc: 'CEIG, LTOA, NCES, P&C clearances' },
-      { cat: 'Others',                desc: 'Overheads, freight, testing & commissioning' },
+      { cat: 'Substation Work',        desc: 'Substation civil & equipment' },
+      { cat: 'Yard & Civil',           desc: 'Yard grading, roads & civil foundation' },
+      { cat: 'Yard Products',          desc: 'Transformer, HT Breaker, LT Panel, Inverter' },
+      { cat: 'Panel',                  desc: 'PV Modules supply' },
+      { cat: 'MMS & Module Erection',  desc: 'MMS structures & module mounting labour' },
+      { cat: 'DC & AC Cabling',        desc: 'DC string cables, AC power cables, earthing' },
+      { cat: 'Infrastructure',         desc: 'Fencing, CCTV, street lights, security room' },
+      { cat: 'Liaisoning',             desc: 'CEIG, LTOA, NCES, P&C clearances' },
+      { cat: 'Others',                 desc: 'Overheads, freight, testing & commissioning' },
     ];
     const created: string[] = [];
     for (let i = 0; i < defaults.length; i++) {
@@ -267,23 +343,44 @@ router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
   }
 });
 
-router.patch('/:id', requireAuth, async (req: AuthRequest, res) => {
-  const ctx = await getProjectContext(req.params.id);
-  assertCan(req.user!, 'update', ctx ?? undefined);
-  const { name, client, status, billable, netCost } = req.body;
-  const project = await prisma.project.update({
-    where: { id: req.params.id },
-    data: {
-      ...(name && { name }),
-      ...(client && { client }),
-      ...(status && { status }),
-      ...(billable != null && { billable: BigInt(billable) }),
-      ...(netCost != null && { netCost: BigInt(netCost) }),
-    },
-  });
-  res.json(project);
-});
+router.patch('/:id', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const ctx = await getProjectContext(req.params.id);
+    assertCan(req.user!, 'update', ctx ?? undefined);
 
+    const { name, client, status, billable, netCost } = req.body;
+
+    const updated = await prisma.project.update({
+      where: { id: req.params.id },
+      data: {
+        ...(name     && { name }),
+        ...(client   && { client }),
+        ...(status   && { status }),
+        ...(billable != null && { billable: BigInt(billable) }),
+        ...(netCost  != null && { netCost:  BigInt(netCost)  }),
+      },
+    });
+
+    // ── Recompute profit whenever billable changes ─────────────────────────
+    const allItems = await prisma.wBSLineItem.findMany({
+      where: { projectId: req.params.id },
+      select: { paid: true },
+    });
+    const liveNetCost = netCost != null
+      ? BigInt(netCost)
+      : allItems.reduce((s, i) => s + BigInt(i.paid ?? 0), BigInt(0));
+    const liveProfit  = BigInt(updated.billable ?? 0) - liveNetCost;
+
+    await prisma.project.update({
+      where: { id: req.params.id },
+      data: { netCost: liveNetCost, profit: liveProfit },
+    });
+
+    res.json({ ...updated, netCost: liveNetCost, profit: liveProfit });
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.delete('/:id', requireAuth, async (req: AuthRequest, res, next) => {
   try {
