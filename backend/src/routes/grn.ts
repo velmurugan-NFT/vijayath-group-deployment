@@ -56,9 +56,10 @@ router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
     await writeAudit(req.user!.id, 'GRN_RECORDED', 'GRN', grn.id, {
       poId,
       grnNumber,
-     qualityPass: (grn as any).qualityPass,
-qualityRemark: (grn as any).qualityRemark,
-quantityReceived: (grn as any).quantityReceived,
+      qualityPass: (grn as any).qualityPass,
+      qualityRemark: (grn as any).qualityRemark,
+      quantityReceived: (grn as any).quantityReceived,
+      projectId: po.projectId,
     });
 
     res.status(201).json(grn);

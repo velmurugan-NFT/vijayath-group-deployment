@@ -73,7 +73,7 @@ router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
       data: { projectId, amount, receivedAt: new Date(receivedAt), reference },
       include: { project: true },
     });
-    await writeAudit(req.user!.id, 'RECEIPT_RECORDED', 'CustomerReceipt', receipt.id, { amount });
+    await writeAudit(req.user!.id, 'RECEIPT_RECORDED', 'CustomerReceipt', receipt.id, { amount, projectId });
     res.status(201).json(receipt);
   } catch (err) { next(err); }
 });

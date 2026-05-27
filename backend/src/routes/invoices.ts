@@ -40,7 +40,7 @@ router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
       },
       include: { project: true },
     });
-    await writeAudit(req.user!.id, 'INVOICE_GENERATED', 'CustomerInvoice', invoice.id, { invoiceNumber, amount });
+    await writeAudit(req.user!.id, 'INVOICE_GENERATED', 'CustomerInvoice', invoice.id, { invoiceNumber, amount, projectId });
     res.status(201).json(invoice);
   } catch (err) { next(err); }
 });

@@ -97,6 +97,7 @@ router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
       },
       include: { project: true, lineItem: true },
     });
+    await writeAudit(req.user!.id, 'QUOTATION_REQUEST_CREATED', 'QuotationRequest', qr.id, { title, projectId });
     res.status(201).json(qr);
   } catch (err) { next(err); }
 });
@@ -143,6 +144,7 @@ router.delete('/:id', requireAuth, async (req: AuthRequest, res, next) => {
     await writeAudit(req.user!.id, 'QUOTATION_REQUEST_DELETED', 'QuotationRequest', qr.id, {
       title:             qr.title,
       quotationsDeleted: qr.quotations.length,
+      projectId:         qr.projectId,
     });
 
     res.json({ success: true });
@@ -180,6 +182,10 @@ router.post('/:id/quotes', requireAuth, async (req: AuthRequest, res, next) => {
     await prisma.quotationRequest.update({
       where: { id: qr.id },
       data:  { status: QuotationRequestStatus.COMPARISON },
+    });
+
+    await writeAudit(req.user!.id, 'VENDOR_QUOTE_ADDED', 'Quotation', q.id, {
+      vendorId, amount, projectId: qr.projectId,
     });
 
     res.status(201).json(unpackQuote(q as unknown as Record<string, unknown>));
@@ -340,6 +346,7 @@ router.post('/:id/select-winner', requireAuth, async (req: AuthRequest, res, nex
       isLowestPrice: isLowest,
       reason:        reason ?? null,
       poNumber,
+      projectId:     qr.projectId,
     });
 
     res.json({ quotationRequest: { ...qr, status: QuotationRequestStatus.PO_CREATED }, purchaseOrder: po });

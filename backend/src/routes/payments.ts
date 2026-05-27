@@ -55,7 +55,7 @@ router.post('/:id/submit', requireAuth, async (req: AuthRequest, res, next) => {
       where: { id: pr.id },
       data: { status: PaymentRequestStatus.PENDING_APPROVAL },
     });
-    await writeAudit(req.user!.id, 'PAYMENT_SUBMITTED', 'PaymentRequest', pr.id, { amount: pr.amount });
+    await writeAudit(req.user!.id, 'PAYMENT_SUBMITTED', 'PaymentRequest', pr.id, { amount: pr.amount, projectId: pr.projectId });
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -88,7 +88,7 @@ router.post('/:id/approve', requireAuth, async (req: AuthRequest, res, next) => 
       where: { id: pr.id },
       data: { status: PaymentRequestStatus.APPROVED, approverId: req.user!.id, approvedAt: new Date() },
     });
-    await writeAudit(req.user!.id, 'PAYMENT_APPROVED', 'PaymentRequest', pr.id, { amount: pr.amount });
+    await writeAudit(req.user!.id, 'PAYMENT_APPROVED', 'PaymentRequest', pr.id, { amount: pr.amount, projectId: pr.projectId });
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -117,7 +117,7 @@ router.post('/:id/execute', requireAuth, async (req: AuthRequest, res, next) => 
       await recalcLineItem(pr.lineItemId);
     }
 
-    await writeAudit(req.user!.id, 'PAYMENT_EXECUTED', 'Payment', payment.id, { utr, amount: pr.amount });
+    await writeAudit(req.user!.id, 'PAYMENT_EXECUTED', 'Payment', payment.id, { utr, amount: pr.amount, projectId: pr.projectId });
     res.json({ payment, paymentRequest: pr });
   } catch (err) { next(err); }
 });

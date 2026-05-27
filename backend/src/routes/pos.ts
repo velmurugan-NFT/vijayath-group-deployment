@@ -113,7 +113,7 @@ router.patch('/:id', requireAuth, async (req: AuthRequest, res, next) => {
       },
       include: { vendor: true, lineItems: true },
     });
-    await writeAudit(req.user!.id, 'PO_EDITED', 'PurchaseOrder', po.id, { poNumber: po.poNumber });
+    await writeAudit(req.user!.id, 'PO_EDITED', 'PurchaseOrder', po.id, { poNumber: po.poNumber, projectId: po.projectId });
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -130,7 +130,7 @@ router.post('/:id/submit', requireAuth, async (req: AuthRequest, res, next) => {
       data: { status: POStatus.PENDING_APPROVAL },
       include: { vendor: true, lineItems: true },
     });
-    await writeAudit(req.user!.id, 'PO_SUBMITTED', 'PurchaseOrder', po.id, { poNumber: po.poNumber, amount: po.totalAmount });
+    await writeAudit(req.user!.id, 'PO_SUBMITTED', 'PurchaseOrder', po.id, { poNumber: po.poNumber, amount: po.totalAmount, projectId: po.projectId });
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -166,7 +166,7 @@ router.post('/:id/approve', requireAuth, async (req: AuthRequest, res, next) => 
     });
 
     for (const li of po.lineItems) await recalcLineItem(li.lineItemId);
-    await writeAudit(req.user!.id, 'PO_APPROVED', 'PurchaseOrder', po.id, { poNumber: po.poNumber });
+    await writeAudit(req.user!.id, 'PO_APPROVED', 'PurchaseOrder', po.id, { poNumber: po.poNumber, projectId: po.projectId });
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -182,7 +182,7 @@ router.post('/:id/reject', requireAuth, async (req: AuthRequest, res, next) => {
       where: { id: po.id },
       data: { status: POStatus.REJECTED, rejectReason: reason },
     });
-    await writeAudit(req.user!.id, 'PO_REJECTED', 'PurchaseOrder', po.id, { reason });
+    await writeAudit(req.user!.id, 'PO_REJECTED', 'PurchaseOrder', po.id, { reason, projectId: po.projectId });
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -197,7 +197,7 @@ router.post('/:id/return', requireAuth, async (req: AuthRequest, res, next) => {
       where: { id: po.id },
       data: { status: POStatus.RETURNED, rejectReason: reason ?? 'Returned for edit' },
     });
-    await writeAudit(req.user!.id, 'PO_RETURNED', 'PurchaseOrder', po.id, { reason });
+    await writeAudit(req.user!.id, 'PO_RETURNED', 'PurchaseOrder', po.id, { reason, projectId: po.projectId });
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -214,7 +214,7 @@ router.post('/:id/send', requireAuth, async (req: AuthRequest, res, next) => {
       where: { id: po.id },
       data: { status: POStatus.SENT_TO_VENDOR },
     });
-    await writeAudit(req.user!.id, 'PO_SENT_TO_VENDOR', 'PurchaseOrder', po.id, { poNumber: po.poNumber });
+    await writeAudit(req.user!.id, 'PO_SENT_TO_VENDOR', 'PurchaseOrder', po.id, { poNumber: po.poNumber, projectId: po.projectId });
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -293,6 +293,7 @@ router.post('/:id/amend', requireAuth, async (req: AuthRequest, res, next) => {
       newVersion: currentVersion + 1,
       amendReason,
       amountChanged,
+      projectId: po.projectId,
     });
 
     res.json({ ...updated, requiresReapproval: amountChanged });
