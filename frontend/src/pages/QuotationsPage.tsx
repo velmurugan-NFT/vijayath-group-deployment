@@ -179,7 +179,7 @@ export function QuotationsPage() {
                               <QRPill status={r.status} />
                             {winner && (
                               <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: 2 }}>
-                                Selected: {winner.vendor.name}
+                                 {winner.vendor.name}
                               </div>
                             )}
                             </td>

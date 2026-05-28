@@ -125,9 +125,9 @@ export function ProjectDetailPage() {
           onRefresh={() => api(`/tasks?projectId=${id}`).then(setTasks)}
         />
       )}
-      {tab === 'pos' && <TabTable title="Purchase orders" link={`/quotations${q}`} headers={['PO #', 'Vendor', 'Amount', 'Status']} rows={(pos as PoRow[]).map((p) => [<Link key={p.id} to={`/pos/${p.id}`} className="underline">{p.poNumber}</Link>, p.vendor?.name ?? '—', formatINR(p.totalAmount), <StatusPill key={p.id} status={p.status} />])} />}
-      {tab === 'payments' && <TabTable title="Payments" link={`/payments${q}`} headers={['PO', 'Amount', 'Status']} rows={(payments as PayRow[]).map((p) => [p.po?.poNumber, formatINR(p.amount), <StatusPill key={p.id} status={p.status} />])} />}
-      {tab === 'invoices' && <TabTable title="Customer invoices" link={`/invoices${q}`} headers={['#', 'Amount', 'Date']} rows={(invoices as InvRow[]).map((i) => [i.invoiceNumber, formatINR(i.amount), formatDate(i.issuedAt)])} />}
+      {tab === 'pos' && <TabTable title="Purchase orders" link={`/quotations${q}`} headers={['PO #', 'Vendor', 'Amount', 'Status']} colWidths={['20%', '35%', '25%', '20%']} rows={(pos as PoRow[]).map((p) => [<Link key={p.id} to={`/pos/${p.id}`} className="underline">{p.poNumber}</Link>, p.vendor?.name ?? '—', formatINR(p.totalAmount), <StatusPill key={p.id} status={p.status} />])} />}
+      {tab === 'payments' && <TabTable title="Payments" link={`/payments${q}`} headers={['PO', 'Amount', 'Date', 'Status']} colWidths={[undefined, '160px', '130px', '110px']} rows={(payments as PayRow[]).map((p) => [p.po?.poNumber, formatINR(p.amount), formatDate(p.payment?.paidAt), <StatusPill key={p.id} status={p.status} />])} />}
+      {tab === 'invoices' && <TabTable title="Customer invoices" link={`/invoices${q}`} headers={['#', 'Amount', 'Date']} colWidths={[undefined, '180px', '130px']} rows={(invoices as InvRow[]).map((i) => [i.invoiceNumber, formatINR(i.amount), formatDate(i.issuedAt)])} />}
       {tab === 'documents' && (
         <Card>
           <CardHeader title="Documents" />
@@ -162,14 +162,34 @@ export function ProjectDetailPage() {
   );
 }
 
-function TabTable({ title, link, linkLabel = 'Open', headers, rows, delayed }: { title: string; link: string; linkLabel?: string; headers: string[]; rows: ReactNode[][]; delayed?: string[] }) {
+function TabTable({ title, link, linkLabel = 'Open', headers, rows, delayed, colWidths }: { title: string; link: string; linkLabel?: string; headers: string[]; rows: ReactNode[][]; delayed?: string[]; colWidths?: string[] }) {
+  const amountCols = new Set(['Amount', 'Date', 'DATE', 'Status', 'STATUS']);
   return (
     <Card>
       <CardHeader title={title} actions={<Link to={link} className="btn btn-ghost btn-sm">{linkLabel}</Link>} />
       <CardBody className="p-0">
-        <table className="tbl">
-          <thead><tr>{headers.map((h) => <th key={h}>{h}</th>)}</tr></thead>
-          <tbody>{rows.map((row, i) => <tr key={i} className={delayed?.includes(String(row[0])) ? 'delayed' : ''}>{row.map((cell, j) => <td key={j} className={j > 0 && typeof cell === 'string' && cell.includes('₹') ? 'right amt' : ''}>{cell}</td>)}</tr>)}</tbody>
+        <table className="tbl" style={{ tableLayout: 'fixed', width: '100%' }}>
+          <colgroup>
+            {headers.map((h, i) => (
+              <col key={i} style={{ width: colWidths?.[i] ?? (i === 0 ? 'auto' : undefined) }} />
+            ))}
+          </colgroup>
+          <thead>
+            <tr>
+              {headers.map((h, i) => (
+                <th key={h} style={{ textAlign: i > 0 && amountCols.has(h) ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={i} className={delayed?.includes(String(row[0])) ? 'delayed' : ''}>
+                {row.map((cell, j) => (
+                  <td key={j} style={{ textAlign: j > 0 && amountCols.has(headers[j]) ? 'right' : 'left', whiteSpace: j > 0 ? 'nowrap' : undefined }} className={j > 0 && typeof cell === 'string' && cell.includes('₹') ? 'right amt' : ''}>{cell}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
         </table>
       </CardBody>
     </Card>
@@ -183,7 +203,7 @@ type TaskRow = {
   plannedStart?: string | null; plannedEnd?: string | null;
 };
 type PoRow = { id: string; poNumber: string; totalAmount: number; status: string; vendor?: { name: string } };
-type PayRow = { id: string; amount: number; status: string; po?: { poNumber: string } };
+type PayRow = { id: string; amount: number; status: string; po?: { poNumber: string }; payment?: { paidAt: string } | null };
 type InvRow = { id: string; invoiceNumber: string; amount: number; issuedAt: string };
 type DocRow = { id: string; filename: string };
 type AuditRow = { id: string; action: string; createdAt: string; user?: { name: string } };
