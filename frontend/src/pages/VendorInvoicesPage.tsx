@@ -13,47 +13,71 @@ import { useProjectQuery } from '@/hooks/useProjectQuery';
 import { toast } from 'sonner';
 import { useProjectContext } from '@/context/ProjectContext';
 import { Badge } from '@/components/ui/badge';
-import { Pencil, PencilLine } from 'lucide-react';
-// ── Types ─────────────────────────────────────────────────────────────────────
+import { Pencil } from 'lucide-react';
 
-type Payment = {
-  id: string;
-  amount: number;
-  paidAt: string;
-  note?: string;
-};
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type Inv = {
   id: string;
   invoiceNumber: string;
   amount: number;
   invoiceDate: string;
-  payments: Payment[];
+  // ✅ Computed by backend: sum of Payment.amount via PaymentRequest → Payment
+  paidAmount: number;
+  isPaid: boolean;
   po?: {
     id: string;
     poNumber: string;
+    totalAmount: number;
     project?: { id: string; name: string };
     vendor?: { name: string };
+    vendorInvoices?: { id: string; amount: number }[];
   };
 };
 
-type Po = { id: string; poNumber: string; status: string; totalAmount: number; vendor?: { name: string } };
+type Po = {
+  id: string;
+  poNumber: string;
+  status: string;
+  totalAmount: number;
+  vendor?: { name: string };
+  vendorInvoices?: { id: string; amount: number }[];
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function paidTotal(inv: Inv) {
-  return (inv.payments ?? []).reduce((s, p) => s + (p.amount ?? 0), 0);
+/** Sum of all invoice amounts already raised against a PO (from the items list). */
+function poInvoicedFromItems(items: Inv[], poId: string, excludeInvId?: string) {
+  return items
+    .filter((i) => i.po?.id === poId && i.id !== excludeInvId)
+    .reduce((s, i) => s + (i.amount ?? 0), 0);
 }
 
-function balance(inv: Inv) {
-  return (inv.amount ?? 0) - paidTotal(inv);
+/**
+ * paidAmount comes directly from the backend (PaymentRequest → Payment).
+ * VendorInvoicePayment is a separate sub-system and is NOT used here.
+ */
+function invoicePaidAmount(inv: Inv): number {
+  return Number(inv.paidAmount ?? 0);
 }
 
-function paymentStatus(inv: Inv): { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' } {
-  const bal = balance(inv);
-  if (bal <= 0)              return { label: 'Fully Paid',   variant: 'default' };
-  if (paidTotal(inv) === 0)  return { label: 'Unpaid',       variant: 'destructive' };
-  return                            { label: 'Partial',      variant: 'secondary' };
+/**
+ * Derive the display status for an invoice row:
+ *   'PAID'            — backend confirms isPaid = true
+ *   'FULLY_INVOICED'  — PO fully invoiced but not yet fully paid
+ *   'PARTIAL'         — PO still has remaining balance
+ */
+function invoiceDisplayStatus(
+  inv: Inv,
+  items: Inv[],
+): 'PAID' | 'FULLY_INVOICED' | 'PARTIAL' {
+  if (inv.isPaid === true) return 'PAID';
+
+  const invoiced = poInvoicedFromItems(items, inv.po?.id ?? '');
+  const bal = Number(inv.po?.totalAmount ?? 0) - invoiced;
+  if (bal <= 0) return 'FULLY_INVOICED';
+
+  return 'PARTIAL';
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -62,73 +86,118 @@ export function VendorInvoicesPage() {
   const pq = useProjectQuery();
   const { activeProject } = useProjectContext();
 
-  const [items,       setItems]       = useState<Inv[]>([]);
-  const [pos,         setPos]         = useState<Po[]>([]);
+  const [items, setItems] = useState<Inv[]>([]);
+  const [pos,   setPos]   = useState<Po[]>([]);
 
   // "Add invoice" dialog
-  const [addOpen,    setAddOpen]    = useState(false);
-  const [addForm,    setAddForm]    = useState({
-    poId: '',
-    invoiceDate: new Date().toISOString().slice(0, 10),
+  const [addOpen, setAddOpen] = useState(false);
+  const [addForm, setAddForm] = useState({
+    poId:          '',
+    amount:        0,
+    invoiceNumber: '',
+    invoiceDate:   new Date().toISOString().slice(0, 10),
   });
 
   // "Edit invoice" dialog
   const [editTarget, setEditTarget] = useState<Inv | null>(null);
   const [editForm,   setEditForm]   = useState({ amount: 0, invoiceDate: '' });
 
-  // "Record payment" dialog
-  const [payTarget,  setPayTarget]  = useState<Inv | null>(null);
-  const [payForm,    setPayForm]    = useState({ amount: 0, note: '' });
+  // ── Data loading ────────────────────────────────────────────────────────
 
-  // "View payments" dialog
-  const [viewTarget, setViewTarget] = useState<Inv | null>(null);
-
-  // ── Data loading ─────────────────────────────────────────────────────────
-
+  // NOTE: make sure your /vendor-invoices endpoint includes
+  // payments: { id, amount, status } in its response shape.
   const load = () =>
     api<Inv[]>(`/vendor-invoices${pq}`).then(setItems);
 
-  useEffect(() => {
-    load();
-    // Only approved POs are eligible to be invoiced
-    api<Po[]>(`/pos${pq}&status=approved`).then(setPos);
-  }, [pq]);
+  const loadPos = () =>
+    api<Po[]>(`/pos${pq}`).then((all) =>
+      setPos(all.filter((p) => p.status === 'APPROVED' || p.status === 'SENT_TO_VENDOR'))
+    );
+
+  useEffect(() => { load(); loadPos(); }, [pq]);
 
   useEffect(() => {
-    setAddForm((f) => ({ ...f, poId: '' }));
+    setAddForm((f) => ({ ...f, poId: '', amount: 0 }));
   }, [activeProject?.id]);
 
-  // ── Submit: create invoice ────────────────────────────────────────────────
+  // ── Derived: add dialog ─────────────────────────────────────────────────
+
+  const addPo = pos.find((p) => p.id === addForm.poId);
+
+  const addAlreadyInvoiced = addPo ? poInvoicedFromItems(items, addPo.id) : 0;
+  const addPoBalance       = addPo ? Number(addPo.totalAmount) - addAlreadyInvoiced : 0;
+  const addAmountExceeds   = addForm.amount > addPoBalance;
+
+  // ✅ Warn if the selected PO already has an invoice (but still allow if balance remains)
+  const addPoExistingInvoices = addPo
+    ? items.filter((i) => i.po?.id === addPo.id)
+    : [];
+  const addPoAlreadyHasInvoice = addPoExistingInvoices.length > 0;
+
+  const handleAddPoChange = (poId: string) => {
+    const po      = pos.find((p) => p.id === poId);
+    const invoiced = po ? poInvoicedFromItems(items, po.id) : 0;
+    const bal      = po ? Number(po.totalAmount) - invoiced : 0;
+    setAddForm((f) => ({ ...f, poId, amount: bal }));
+  };
+
+  // ── Derived: edit dialog ────────────────────────────────────────────────
+
+  const editAlreadyInvoiced = editTarget
+    ? poInvoicedFromItems(items, editTarget.po?.id ?? '', editTarget.id)
+    : 0;
+  const editPoTotal      = Number(editTarget?.po?.totalAmount ?? 0);
+  const editPoBalance    = editTarget ? editPoTotal - editAlreadyInvoiced : Infinity;
+  const editAmountExceeds = editForm.amount > editPoBalance;
+
+  // ── Submit: create invoice ──────────────────────────────────────────────
 
   const submitAdd = async () => {
-    if (!addForm.poId) { toast.error('Select a PO'); return; }
+    if (!addForm.poId)                          { toast.error('Select a PO'); return; }
+    if (!addForm.amount || addForm.amount <= 0) { toast.error('Enter invoice amount'); return; }
+    if (addAmountExceeds) {
+      toast.error(`Amount exceeds PO balance of ${formatINR(addPoBalance)}`);
+      return;
+    }
     try {
-      await api('/vendor-invoices', {
-        method: 'POST',
-        body: JSON.stringify(addForm),
-      });
-      toast.success('Vendor invoice created');
+      const result = await api<{ _merged?: boolean; invoiceNumber?: string }>(
+        '/vendor-invoices',
+        { method: 'POST', body: JSON.stringify(addForm) },
+      );
+      // Backend merges into existing invoice when PO already has one
+      if (result._merged) {
+        toast.success(`Amount added to existing invoice ${result.invoiceNumber}`);
+      } else {
+        toast.success(`Vendor invoice ${result.invoiceNumber} created`);
+      }
       setAddOpen(false);
-      setAddForm({ poId: '', invoiceDate: new Date().toISOString().slice(0, 10) });
+      setAddForm({
+        poId: '',
+        amount: 0,
+        invoiceNumber: '',
+        invoiceDate: new Date().toISOString().slice(0, 10),
+      });
       load();
+      loadPos();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to create invoice');
     }
   };
 
-  // ── Submit: edit invoice ──────────────────────────────────────────────────
+  // ── Submit: edit invoice ────────────────────────────────────────────────
 
   const openEdit = (inv: Inv) => {
     setEditTarget(inv);
-    setEditForm({
-      amount:      inv.amount,
-      invoiceDate: inv.invoiceDate.slice(0, 10),
-    });
+    setEditForm({ amount: inv.amount, invoiceDate: inv.invoiceDate.slice(0, 10) });
   };
 
   const submitEdit = async () => {
     if (!editTarget) return;
     if (!editForm.amount || editForm.amount <= 0) { toast.error('Enter a valid amount'); return; }
+    if (editAmountExceeds) {
+      toast.error(`Amount exceeds remaining PO balance of ${formatINR(editPoBalance)}`);
+      return;
+    }
     try {
       await api(`/vendor-invoices/${editTarget.id}`, {
         method: 'PATCH',
@@ -137,46 +206,19 @@ export function VendorInvoicesPage() {
       toast.success('Invoice updated');
       setEditTarget(null);
       load();
+      loadPos();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to update invoice');
     }
   };
 
-  // ── Submit: record payment ────────────────────────────────────────────────
-
-  const openPay = (inv: Inv) => {
-    setPayTarget(inv);
-    setPayForm({ amount: balance(inv), note: '' });
-  };
-
-  const submitPay = async () => {
-    if (!payTarget) return;
-    const bal = balance(payTarget);
-    if (!payForm.amount || payForm.amount <= 0) { toast.error('Enter a valid amount'); return; }
-    if (payForm.amount > bal) {
-      toast.error(`Amount exceeds balance of ${formatINR(bal)}`);
-      return;
-    }
-    try {
-      await api(`/vendor-invoices/${payTarget.id}/payments`, {
-        method: 'POST',
-        body: JSON.stringify(payForm),
-      });
-      toast.success('Payment recorded');
-      setPayTarget(null);
-      load();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to record payment');
-    }
-  };
-
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ──────────────────────────────────────────────────────────────
 
   return (
     <div>
       <PageHeader
-        title="Vendor invoices"
-        subtitle="Invoices linked to POs"
+        title="Vendor Invoices"
+        subtitle="Invoices raised against approved POs"
         actions={<Button onClick={() => setAddOpen(true)}>Add invoice</Button>}
       />
 
@@ -186,16 +228,11 @@ export function VendorInvoicesPage() {
             key: 'num',
             header: 'Invoice #',
             render: (r) => (
-              <button
-                className="font-mono text-sm underline underline-offset-2 hover:text-primary"
-                onClick={() => setViewTarget(r)}
-              >
-                {r.invoiceNumber}
-              </button>
+              <span className="font-mono text-sm font-medium">{r.invoiceNumber}</span>
             ),
           },
-          { key: 'po',     header: 'PO',      render: (r) => r.po?.poNumber ?? '—' },
-          { key: 'vendor', header: 'Vendor',  render: (r) => r.po?.vendor?.name ?? '—' },
+          { key: 'po',     header: 'PO',     render: (r) => r.po?.poNumber ?? '—' },
+          { key: 'vendor', header: 'Vendor', render: (r) => r.po?.vendor?.name ?? '—' },
           {
             key: 'proj',
             header: 'Project',
@@ -206,115 +243,166 @@ export function VendorInvoicesPage() {
                 </Link>
               ) : '—',
           },
-          { key: 'total',   header: 'Invoice Amt',  render: (r) => formatINR(r.amount) },
-          { key: 'paid',    header: 'Paid',         render: (r) => formatINR(paidTotal(r)) },
           {
-            key: 'balance',
-            header: 'Balance',
-            render: (r) => (
-              <span className={balance(r) > 0 ? 'text-orange-600 font-medium' : 'text-green-600 font-medium'}>
-                {formatINR(balance(r))}
-              </span>
-            ),
+            key: 'po_total',
+            header: 'PO Amount',
+            render: (r) => formatINR(Number(r.po?.totalAmount ?? 0)),
+          },
+          {
+            key: 'inv_amount',
+            header: 'Invoice Amount',
+            render: (r) => formatINR(r.amount),
+          },
+          // ✅ Amount paid column — shows how much has been paid against this invoice
+          {
+            key: 'paid_amount',
+            header: 'Paid',
+            render: (r) => {
+              const paid = invoicePaidAmount(r);
+              return paid > 0 ? (
+                <span className="text-green-700 font-semibold">{formatINR(paid)}</span>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              );
+            },
           },
           {
             key: 'status',
             header: 'Status',
             render: (r) => {
-              const s = paymentStatus(r);
-              return <Badge variant={s.variant}>{s.label}</Badge>;
+              const status = invoiceDisplayStatus(r, items);
+              if (status === 'PAID') {
+                return (
+                  <Badge
+                    variant="default"
+                    className="bg-green-600 hover:bg-green-600 text-white"
+                  >
+                    Paid
+                  </Badge>
+                );
+              }
+              if (status === 'FULLY_INVOICED') {
+                return <Badge variant="default">Fully Invoiced</Badge>;
+              }
+              return <Badge variant="secondary">Partial</Badge>;
             },
           },
           { key: 'date', header: 'Date', render: (r) => formatDate(r.invoiceDate) },
-         {
-  key: 'actions',
-  header: 'Action',
-
-  render: (r) => (
-
-    <div
-      className="
-      flex
-      justify-end
-      items-center
-      gap-2
-    "
-    >
-
-      {balance(r) > 0 && (
-
-        <Button
-          size="sm"
-          variant="default"
-          onClick={() => openPay(r)}
-        >
-          Pay
-        </Button>
-
-      )}
-
-      <button
-        type="button"
-        title="Edit invoice"
-
-        onClick={() => openEdit(r)}
-
-        className="
-        p-2
-        rounded-md
-        hover:bg-blue-100
-        text-muted-foreground
-        hover:text-blue-600
-        transition
-        "
-      >
-
-        <Pencil
-          size={16}
-        />
-
-      </button>
-
-    </div>
-
-  ),
-}
+          {
+            key: 'actions',
+            header: '',
+            render: (r) => (
+              <button
+                type="button"
+                title="Edit invoice"
+                onClick={() => openEdit(r)}
+                className="p-2 rounded-md hover:bg-blue-100 text-muted-foreground hover:text-blue-600 transition"
+              >
+                <Pencil size={16} />
+              </button>
+            ),
+          },
         ]}
         data={items}
         keyFn={(r) => r.id}
       />
 
-      {/* ── Add Invoice Dialog ────────────────────────────────────────────── */}
+      {/* ── Add Invoice Dialog ──────────────────────────────────────────── */}
       <FormDialog
         open={addOpen}
         onOpenChange={setAddOpen}
-        title="Add vendor invoice"
+        title={addPoAlreadyHasInvoice ? `Add amount to ${addPoExistingInvoices[0]?.invoiceNumber}` : 'Add vendor invoice'}
         onSubmit={submitAdd}
       >
+        {/* PO selector */}
         <div>
           <Label>PO (approved only) *</Label>
           <select
             className="w-full border rounded px-3 py-2 mt-1"
             value={addForm.poId}
-            onChange={(e) => setAddForm({ ...addForm, poId: e.target.value })}
+            onChange={(e) => handleAddPoChange(e.target.value)}
           >
             <option value="">— Select PO —</option>
-            {pos.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.poNumber}{p.vendor?.name ? ` — ${p.vendor.name}` : ''} ({formatINR(Number(p.totalAmount))})
-              </option>
-            ))}
-            {pos.length === 0 && (
-              <option disabled>No approved POs found for this project</option>
-            )}
+            {pos.map((p) => {
+              const invoiced = poInvoicedFromItems(items, p.id);
+              const bal = Number(p.totalAmount) - invoiced;
+              return (
+                <option key={p.id} value={p.id} disabled={bal <= 0}>
+                  {p.poNumber}{p.vendor?.name ? ` (${p.vendor.name})` : ''}
+                  {bal <= 0 ? ' — fully invoiced' : ''}
+                </option>
+              );
+            })}
+            {pos.length === 0 && <option disabled>No approved POs found</option>}
           </select>
         </div>
+
+        {/* ✅ Info: PO already has an invoice — this amount will be MERGED into it */}
+        {addPoAlreadyHasInvoice && addPoBalance > 0 && (
+          <div className="rounded-md border border-blue-300 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            <p className="font-semibold mb-1">
+              Amount will be added to {addPoExistingInvoices[0]?.invoiceNumber}
+            </p>
+            <p>
+             <strong>{formatINR(addPoBalance)}</strong>.
+            </p>
+          </div>
+        )}
+
+        {/* Balance info */}
+        {addPo && (
+          <div className="rounded-md bg-muted px-4 py-3 text-sm grid grid-cols-3 gap-2 text-center">
+            <div>
+              <p className="text-muted-foreground text-xs">PO Total</p>
+              <p className="font-semibold">{formatINR(Number(addPo.totalAmount))}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground text-xs">Already Invoiced</p>
+              <p className="font-semibold">{formatINR(addAlreadyInvoiced)}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground text-xs">Available Balance</p>
+              <p className="font-semibold text-orange-600">{formatINR(addPoBalance)}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Invoice amount */}
         <div>
-          <Label>Invoice # </Label>
-          <p className="text-sm text-muted-foreground mt-1">
-            Auto-generated on save (e.g. VI-202506-0001)
-          </p>
+          <Label>
+            {addPoAlreadyHasInvoice ? 'Amount to add (₹) *' : 'Invoice Amount (₹) *'}
+          </Label>
+          <Input
+            type="number"
+            min={1}
+            max={addPoBalance}
+            value={addForm.amount || ''}
+            onChange={(e) => setAddForm({ ...addForm, amount: Number(e.target.value) })}
+            className={addAmountExceeds ? 'border-destructive' : ''}
+          />
+          {addAmountExceeds && (
+            <p className="text-xs text-destructive mt-1">
+              Exceeds available balance of {formatINR(addPoBalance)}
+            </p>
+          )}
         </div>
+
+        {/* Invoice # — only shown when creating a brand-new invoice */}
+        {!addPoAlreadyHasInvoice && (
+          <div>
+            <Label>Invoice #</Label>
+            <Input
+              placeholder="Auto-generated on save"
+              value={addForm.invoiceNumber ?? ''}
+              onChange={(e) => setAddForm({ ...addForm, invoiceNumber: e.target.value })}
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Leave blank to auto-generate, or type a custom number.
+            </p>
+          </div>
+        )}
+
+        {/* Date */}
         <div>
           <Label>Date</Label>
           <Input
@@ -325,7 +413,7 @@ export function VendorInvoicesPage() {
         </div>
       </FormDialog>
 
-      {/* ── Edit Invoice Dialog ───────────────────────────────────────────── */}
+      {/* ── Edit Invoice Dialog ─────────────────────────────────────────── */}
       <FormDialog
         open={!!editTarget}
         onOpenChange={(o) => { if (!o) setEditTarget(null); }}
@@ -334,24 +422,55 @@ export function VendorInvoicesPage() {
       >
         {editTarget && (
           <>
-            <div className="rounded-md bg-muted px-4 py-3 text-sm space-y-1">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Already paid</span>
-                <span className="font-medium">{formatINR(paidTotal(editTarget))}</span>
+            {/* PO balance info */}
+            <div className="rounded-md bg-muted px-4 py-3 text-sm grid grid-cols-3 gap-2 text-center">
+              <div>
+                <p className="text-muted-foreground text-xs">PO Total</p>
+                <p className="font-semibold">{formatINR(editPoTotal)}</p>
               </div>
-              <p className="text-xs text-muted-foreground">
-                Invoice amount cannot be set below the paid total.
-              </p>
+              <div>
+                <p className="text-muted-foreground text-xs">Other Invoices</p>
+                <p className="font-semibold">{formatINR(editAlreadyInvoiced)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">Max for this Invoice</p>
+                <p className="font-semibold text-orange-600">{formatINR(editPoBalance)}</p>
+              </div>
             </div>
+
+            {/* ✅ Payment summary — shows how much is already paid on this invoice */}
+            {(editTarget.payments?.length ?? 0) > 0 && (
+              <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm grid grid-cols-2 gap-2 text-center">
+                <div>
+                  <p className="text-muted-foreground text-xs">Invoice Amount</p>
+                  <p className="font-semibold">{formatINR(editTarget.amount)}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground text-xs">Already Paid</p>
+                  <p className="font-semibold text-green-700">
+                    {formatINR(invoicePaidAmount(editTarget))}
+                  </p>
+                </div>
+              </div>
+            )}
+
             <div>
-              <Label>Invoice amount (₹) *</Label>
+              <Label>Invoice Amount (₹) *</Label>
               <Input
                 type="number"
-                min={paidTotal(editTarget)}
-                value={editForm.amount}
+                min={1}
+                max={editPoBalance}
+                value={editForm.amount || ''}
                 onChange={(e) => setEditForm({ ...editForm, amount: Number(e.target.value) })}
+                className={editAmountExceeds ? 'border-destructive' : ''}
               />
+              {editAmountExceeds && (
+                <p className="text-xs text-destructive mt-1">
+                  Exceeds available balance of {formatINR(editPoBalance)}
+                </p>
+              )}
             </div>
+
             <div>
               <Label>Date</Label>
               <Input
@@ -361,134 +480,6 @@ export function VendorInvoicesPage() {
               />
             </div>
           </>
-        )}
-      </FormDialog>
-
-      {/* ── Record Payment Dialog ─────────────────────────────────────────── */}
-      <FormDialog
-        open={!!payTarget}
-        onOpenChange={(o) => { if (!o) setPayTarget(null); }}
-        title="Record payment"
-        onSubmit={submitPay}
-      >
-        {payTarget && (
-          <>
-            {/* Balance summary card */}
-            <div className="rounded-md bg-muted px-4 py-3 text-sm space-y-1">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Invoice total</span>
-                <span className="font-medium">{formatINR(payTarget.amount)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Paid so far</span>
-                <span className="font-medium">{formatINR(paidTotal(payTarget))}</span>
-              </div>
-              <div className="flex justify-between border-t pt-1 mt-1">
-                <span className="font-semibold">Remaining balance</span>
-                <span className="font-bold text-orange-600">{formatINR(balance(payTarget))}</span>
-              </div>
-            </div>
-
-            <div>
-              <Label>Payment amount (₹) *</Label>
-              <Input
-                type="number"
-                min={1}
-                max={balance(payTarget)}
-                value={payForm.amount}
-                onChange={(e) => {
-                  const v = Number(e.target.value);
-                  setPayForm({ ...payForm, amount: v });
-                }}
-              />
-              {payForm.amount > balance(payTarget) && (
-                <p className="text-xs text-destructive mt-1">
-                  Exceeds remaining balance of {formatINR(balance(payTarget))}
-                </p>
-              )}
-            </div>
-
-            <div>
-              <Label>Note (optional)</Label>
-              <Input
-                placeholder="e.g. NEFT ref #12345"
-                value={payForm.note}
-                onChange={(e) => setPayForm({ ...payForm, note: e.target.value })}
-              />
-            </div>
-          </>
-        )}
-      </FormDialog>
-
-      {/* ── View Payment History Dialog ───────────────────────────────────── */}
-      <FormDialog
-        open={!!viewTarget}
-        onOpenChange={(o) => { if (!o) setViewTarget(null); }}
-        title={`Payments — ${viewTarget?.invoiceNumber ?? ''}`}
-        onSubmit={() => setViewTarget(null)}
-        submitLabel="Close"
-        hideCancel
-      >
-        {viewTarget && (
-          <div className="space-y-3">
-            {/* Summary row */}
-            <div className="rounded-md bg-muted px-4 py-3 text-sm grid grid-cols-3 gap-2 text-center">
-              <div>
-                <p className="text-muted-foreground text-xs">Invoice total</p>
-                <p className="font-semibold">{formatINR(viewTarget.amount)}</p>
-              </div>
-              <div>
-                <p className="text-muted-foreground text-xs">Total paid</p>
-                <p className="font-semibold text-green-600">{formatINR(paidTotal(viewTarget))}</p>
-              </div>
-              <div>
-                <p className="text-muted-foreground text-xs">Balance</p>
-                <p className={`font-semibold ${balance(viewTarget) > 0 ? 'text-orange-600' : 'text-green-600'}`}>
-                  {formatINR(balance(viewTarget))}
-                </p>
-              </div>
-            </div>
-
-            {/* Payment list */}
-            {viewTarget.payments.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">No payments recorded yet.</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-muted-foreground text-xs border-b">
-                    <th className="text-left py-1">#</th>
-                    <th className="text-left py-1">Date</th>
-                    <th className="text-right py-1">Amount</th>
-                    <th className="text-left py-1 pl-4">Note</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {viewTarget.payments.map((p, i) => (
-                    <tr key={p.id} className="border-b last:border-0">
-                      <td className="py-1 text-muted-foreground">{i + 1}</td>
-                      <td className="py-1">{formatDate(p.paidAt)}</td>
-                      <td className="py-1 text-right font-medium">{formatINR(p.amount)}</td>
-                      <td className="py-1 pl-4 text-muted-foreground">{p.note ?? '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-
-            {/* Quick-pay button if balance remains */}
-            {balance(viewTarget) > 0 && (
-              <Button
-                size="sm"
-                className="w-full"
-                onClick={() => {
-                  setViewTarget(null);
-                  openPay(viewTarget);
-                }}
-              >
-                Record next payment ({formatINR(balance(viewTarget))} remaining)
-              </Button>
-            )}
-          </div>
         )}
       </FormDialog>
     </div>

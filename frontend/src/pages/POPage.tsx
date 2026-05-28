@@ -6,7 +6,6 @@ import { formatDate } from '@/lib/formatDate';
 import { StatusBadge } from '@/components/StatusBadge';
 import { PageHeader } from '@/components/PageHeader';
 import { Card, CardBody, CardHeader } from '@/components/design/Card';
-import { BudgetBreachWarning } from '@/components/BudgetBreachWarning';
 import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
 import {
@@ -23,6 +22,22 @@ type POVersion = {
   amendReason?: string;
   snapshotAt: string;
   snapshotById?: string;
+};
+
+// ── Payment type — matches backend paymentRequest schema ─────────────────────
+type Payment = {
+  id: string;
+  poId: string;
+  amount: number;
+  status: string;       // DRAFT | PENDING_APPROVAL | APPROVED | PAID
+  purpose?: string | null;
+  createdAt: string;
+  payment?: {           // populated after execute — contains utr & paidAt
+    utr: string;
+    paidAt: string;
+    amount: number;
+  } | null;
+  po?: { poNumber: string; vendor?: { name: string } } | null;
 };
 
 type PO = {
@@ -43,12 +58,14 @@ export function POPage() {
   const { user } = useAuth();
   const [pos,          setPos]          = useState<PO[]>([]);
   const [detail,       setDetail]       = useState<PO | null>(null);
-  const [ackBreach,    setAckBreach]    = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [returnReason, setReturnReason] = useState('');
   const [showReject,   setShowReject]   = useState(false);
   const [showReturn,   setShowReturn]   = useState(false);
   const [showHistory,  setShowHistory]  = useState(false);
+
+  // ── NEW: payments state ───────────────────────────────────────────────────
+  const [payments, setPayments] = useState<Payment[]>([]);
 
   // FR-6.3 AC2: edit draft/returned
   const [editing,  setEditing]  = useState(false);
@@ -63,11 +80,21 @@ export function POPage() {
 
   useEffect(() => { load(); }, []);
   useEffect(() => {
-    if (id) api<PO>(`/pos/${id}`).then((p) => {
-      setDetail(p);
-      setAckBreach(false); setShowReject(false); setShowReturn(false);
-      setEditing(false); setAmending(false); setShowHistory(false);
-    });
+    if (id) {
+      api<PO>(`/pos/${id}`).then((p) => {
+        setDetail(p);
+        setShowReject(false); setShowReturn(false);
+        setEditing(false); setAmending(false); setShowHistory(false);
+      });
+      // ── NEW: fetch payments for this PO ───────────────────────────────────
+      // Fetch payments scoped to this PO's project, then filter by poId
+      api<{ project: { id: string } }>(`/pos/${id}`)
+        .then((po) =>
+          api<any[]>(`/payments?projectId=${po.project.id}`)
+            .then((all) => setPayments(all.filter((p) => p.poId === id)))
+        )
+        .catch(() => {});
+    }
   }, [id]);
 
   const refreshDetail = () => {
@@ -142,12 +169,10 @@ export function POPage() {
   const approve = async () => {
     if (!detail) return;
     try {
-      await api(`/pos/${detail.id}/approve`, { method: 'POST', body: JSON.stringify({ acknowledgeBreach: ackBreach }) });
+      await api(`/pos/${detail.id}/approve`, { method: 'POST', body: JSON.stringify({}) });
       toast.success('PO approved'); refreshDetail(); load();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Failed';
-      if (msg.includes('breach') || msg.includes('Budget')) toast.error('Acknowledge budget breach to proceed');
-      else toast.error(msg);
+      toast.error(e instanceof Error ? e.message : 'Failed');
     }
   };
 
@@ -178,8 +203,6 @@ export function POPage() {
 
   // ── PO detail view ──
   if (id && detail) {
-    const impact     = detail.budgetImpact ?? [];
-    const hasBreach  = impact.some((i) => i.breach);
     const isDraft    = detail.status === 'DRAFT' || detail.status === 'RETURNED';
     const isPending  = detail.status === 'PENDING_APPROVAL';
     const isApproved = detail.status === 'APPROVED' || detail.status === 'SENT_TO_VENDOR';
@@ -435,9 +458,70 @@ export function POPage() {
           </Card>
         )}
 
-        {/* Budget breach warning */}
-        {hasBreach && (
-          <BudgetBreachWarning lines={impact} checked={ackBreach} onCheckedChange={setAckBreach} />
+        {/* ── Payment History — only shown when payments exist ──────────── */}
+        {payments.length > 0 && (
+          <Card className="mb-4">
+            <CardHeader
+              title="Payment History"
+              subtitle={`${payments.length} total · ${payments.filter(p => p.status === 'PAID').length} paid · ${payments.filter(p => p.status !== 'PAID').length} unpaid`}
+            />
+            <CardBody className="p-0">
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>Invoice #</th>
+                    <th>PO</th>
+                    <th>Vendor</th>
+                    <th>Date</th>
+                    <th className="right">Amount</th>
+                    <th>Payment Status</th>
+                    <th>UTR</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payments.map((p) => (
+                    <tr key={p.id}>
+                      <td style={{ fontSize: '0.85rem' }}>
+                        {((p as any).purpose ?? (p as any).invoiceNumber) ?? (
+                          <span style={{ color: 'var(--muted)', fontStyle: 'italic' }}>—</span>
+                        )}
+                      </td>
+                      <td className="mono" style={{ fontWeight: 600 }}>{detail.poNumber}</td>
+                      <td>{detail.vendor.name}</td>
+                      <td style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>{formatDate((p as any).payment?.paidAt ?? (p as any).createdAt)}</td>
+                      <td className="right amt" style={{ fontWeight: 700 }}>{formatINR(p.amount)}</td>
+                      <td>
+                        {p.status === 'PAID' ? (
+                          <span style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                            background: 'var(--success-soft, #dcfce7)',
+                            color: 'var(--success, #16a34a)',
+                            fontWeight: 700, fontSize: '0.78rem',
+                            padding: '2px 10px', borderRadius: 20,
+                          }}>
+                            Paid
+                          </span>
+                        ) : (
+                          <span style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                            background: 'var(--surface-2)',
+                            color: 'var(--muted)',
+                            fontWeight: 600, fontSize: '0.78rem',
+                            padding: '2px 10px', borderRadius: 20,
+                          }}>
+                            {p.status}
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ fontSize: '0.82rem', color: 'var(--muted)', fontFamily: 'monospace' }}>
+                        {(p as any).payment?.utr ?? '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </CardBody>
+          </Card>
         )}
 
         {/* Approver actions (FR-6.4 AC2) */}
