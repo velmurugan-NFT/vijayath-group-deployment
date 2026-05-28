@@ -239,13 +239,16 @@ model GRN {
 }
 
 model VendorInvoice {
-  id            String        @id @default(cuid())
+  id            String               @id @default(cuid())
   poId          String
-  po            PurchaseOrder @relation(fields: [poId], references: [id])
-  invoiceNumber String
-  amount        BigInt
+  invoiceNumber String               @unique
+  amount        Float                // Total invoice amount (= PO amount)
   invoiceDate   DateTime
-  createdAt     DateTime      @default(now())
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  po            PurchaseOrder        @relation(fields: [poId], references: [id])
+  payments      VendorInvoicePayment[]
 }
 
 model PaymentRequest {
@@ -362,4 +365,13 @@ model BankAccount {
   accountNumber String
   ifsc          String
   isDefault     Boolean @default(false)
+}
+model VendorInvoicePayment {
+  id        String        @id @default(cuid())
+  invoiceId String
+  amount    Float
+  paidAt    DateTime      @default(now())
+  note      String?
+
+  invoice   VendorInvoice @relation(fields: [invoiceId], references: [id])
 }

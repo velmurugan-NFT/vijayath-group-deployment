@@ -10,45 +10,66 @@ import { Card, CardHeader, CardBody } from '@/components/design/Card';
 import { useProjectContext } from '@/context/ProjectContext';
 import { Loader2, Send, Zap } from 'lucide-react';
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+type VendorInvoice = {
+  id: string;
+  invoiceNumber: string;
+  po?: {
+    id: string;
+    poNumber: string;
+    vendor?: { name: string };
+  };
+};
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
 export function PaymentsPage() {
   const { user } = useAuth();
   const pq = useProjectQuery();
   const { activeProject } = useProjectContext();
 
   const [items, setItems]           = useState<Record<string, unknown>[]>([]);
-  // All POs (any status) — no filter, so the user can raise a payment against any PO.
-  const [pos, setPos]               = useState<{ id: string; poNumber: string; status: string; vendor?: { name: string } }[]>([]);
-  const [poId, setPoId]             = useState('');
+  const [invoices, setInvoices]     = useState<VendorInvoice[]>([]);
+  const [invoiceId, setInvoiceId]   = useState('');
   const [amount, setAmount]         = useState(0);
   const [utr, setUtr]               = useState('');
   const [approvedId, setApprovedId] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [executing, setExecuting]   = useState(false);
 
-  const load = () => api<Record<string, unknown>[]>(`/payments${pq}`).then(setItems);
+  // Derived: resolve poId from the selected invoice
+  const selectedInvoice = invoices.find((inv) => inv.id === invoiceId) ?? null;
+
+  const load = () =>
+    api<Record<string, unknown>[]>(`/payments${pq}`).then(setItems);
 
   useEffect(() => {
     load();
-    // Fetch ALL POs in scope — backend will validate status on submit.
-    api<{ id: string; poNumber: string; status: string; vendor?: { name: string } }[]>(`/pos${pq}`)
-      .then(setPos);
+    api<VendorInvoice[]>(`/vendor-invoices${pq}`).then(setInvoices);
   }, [pq]);
 
+  // Reset selection when project switches
   useEffect(() => {
-    setPoId('');
+    setInvoiceId('');
+    setAmount(0);
   }, [activeProject?.id]);
 
   const create = async () => {
-    if (!poId) return;
+    if (!invoiceId || !selectedInvoice?.po?.id) return;
     setSubmitting(true);
     try {
       const pr = await api<{ id: string }>('/payments', {
         method: 'POST',
-        body: JSON.stringify({ poId, amount }),
+        body: JSON.stringify({
+          poId: selectedInvoice.po.id,
+          amount,
+          purpose: `Invoice ${selectedInvoice.invoiceNumber}`,
+        }),
       });
       await api(`/payments/${pr.id}/submit`, { method: 'POST' });
       toast.success('Payment request submitted');
-      setPoId('');
+      setInvoiceId('');
       setAmount(0);
       load();
     } catch (err) {
@@ -93,32 +114,43 @@ export function PaymentsPage() {
     <div>
       <PageHeader
         title="Payments"
-        subtitle={activeProject ? `${activeProject.name} — payment requests & UTR execution` : 'Payment requests and UTR execution'}
+        subtitle={
+          activeProject
+            ? `${activeProject.name} — payment requests & UTR execution`
+            : 'Payment requests and UTR execution'
+        }
       />
 
       {/* ── New payment request ── */}
       <Card className="mb-5">
         <CardHeader
           title="New payment request"
-          subtitle="Select a PO and enter the amount to submit a payment request"
+          subtitle="Select a vendor invoice and enter the amount to submit a payment request"
         />
         <CardBody>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12, maxWidth: 640 }}>
+
+            {/* ── Invoice selector ── */}
             <div className="field" style={{ marginBottom: 0 }}>
-              <label>Purchase Order *</label>
-              <select value={poId} onChange={(e) => setPoId(e.target.value)}>
-                <option value="">— select PO —</option>
-                {pos.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.poNumber}{p.vendor?.name ? ` — ${p.vendor.name}` : ''} ({p.status})
+              <label>Vendor Invoice *</label>
+              <select
+                value={invoiceId}
+                onChange={(e) => setInvoiceId(e.target.value)}
+              >
+                <option value="">— select invoice —</option>
+                {invoices.map((inv) => (
+                  <option key={inv.id} value={inv.id}>
+                    {inv.invoiceNumber}
+                    {inv.po?.vendor?.name ? ` — ${inv.po.vendor.name}` : ''}
                   </option>
                 ))}
-                {pos.length === 0 && (
-                  <option disabled>No POs found for this project</option>
+                {invoices.length === 0 && (
+                  <option disabled>No invoices found for this project</option>
                 )}
               </select>
             </div>
 
+            {/* ── Amount — fully manual ── */}
             <div className="field" style={{ marginBottom: 0 }}>
               <label>Amount (₹) *</label>
               <input
@@ -136,12 +168,13 @@ export function PaymentsPage() {
               type="button"
               className="btn btn-primary"
               onClick={create}
-              disabled={!poId || !amount || submitting}
+              disabled={!invoiceId || !amount || submitting}
             >
-              {submitting
-                ? <><Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> Submitting…</>
-                : <><Send style={{ width: 13, height: 13 }} /> Submit request</>
-              }
+              {submitting ? (
+                <><Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> Submitting…</>
+              ) : (
+                <><Send style={{ width: 13, height: 13 }} /> Submit request</>
+              )}
             </button>
           </div>
         </CardBody>
@@ -171,10 +204,11 @@ export function PaymentsPage() {
                   onClick={execute}
                   disabled={!utr.trim() || executing}
                 >
-                  {executing
-                    ? <><Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> Executing…</>
-                    : <><Zap style={{ width: 13, height: 13 }} /> Execute payment</>
-                  }
+                  {executing ? (
+                    <><Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> Executing…</>
+                  ) : (
+                    <><Zap style={{ width: 13, height: 13 }} /> Execute payment</>
+                  )}
                 </button>
                 <button
                   type="button"

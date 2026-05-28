@@ -6,11 +6,10 @@ import { PageHeader } from '@/components/PageHeader';
 import { Card } from '@/components/design/Card';
 import { SectionHeader } from '@/components/design/SectionHeader';
 import { FormDialog } from '@/components/FormDialog';
-import { Plus, Trash2 } from 'lucide-react';
 import { useProjectIdFromUrl, useProjectContext } from '@/context/ProjectContext';
 import { useProjectQuery } from '@/hooks/useProjectQuery';
 import { toast } from 'sonner';
-
+import { Plus, Trash2, Pencil } from 'lucide-react';
 interface Task {
   id: string;
   title: string;
@@ -181,13 +180,32 @@ export function TasksPage() {
                     <td><StatusBadge status={t.status} /></td>
                     <td>{t.isDelayed ? <StatusBadge status="DELAYED" /> : '—'}</td>
                     <td className="right" style={{ display: 'flex', gap: '0.25rem', justifyContent: 'flex-end', alignItems: 'center' }}>
-                      <button
-                        type="button"
-                        className="btn btn-link btn-sm"
-                        onClick={() => openEdit(t)}
-                      >
-                        Edit
-                      </button>
+                                <button
+              type="button"
+              title="Edit task"
+              onClick={() => openEdit(t)}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--muted)',
+                cursor: 'pointer',
+                padding: '4px',
+                borderRadius: 4,
+                display: 'inline-flex',
+                alignItems: 'center',
+                transition: 'color 0.15s, background 0.15s',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = '#2563eb';
+                e.currentTarget.style.background = '#dbeafe';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = 'var(--muted)';
+                e.currentTarget.style.background = 'none';
+              }}
+            >
+              <Pencil width={14} height={14} />
+            </button>
                       <button
                         type="button"
                         title="Delete task"

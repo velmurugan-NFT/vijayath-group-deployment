@@ -112,7 +112,7 @@ export function QuotationsPage() {
           <Card className="mb-5">
             <CardHeader
               title="Quotation Requests"
-              subtitle={`${requests.length} request${requests.length !== 1 ? 's' : ''} · click View to add quotes or select a winner`}
+              subtitle={`${requests.length} request${requests.length !== 1 ? 's' : ''} · click View to add quotes or select `}
             actions={
   <Link
     to="/capture-quotes"
@@ -198,7 +198,7 @@ export function QuotationsPage() {
                       {requests.length === 0 && (
                         <tr>
                           <td colSpan={7} style={{ textAlign: 'center', color: 'var(--muted)', padding: '2.5rem' }}>
-                            No quotation requests yet.{' '}
+                            No Quotation requests yet.{' '}
                             <Link to="/capture-quotes" style={{ color: 'var(--green)', textDecoration: 'underline' }}>
                               Raise one →
                             </Link>

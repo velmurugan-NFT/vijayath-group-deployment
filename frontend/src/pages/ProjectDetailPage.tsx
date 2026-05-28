@@ -397,6 +397,8 @@ function TasksTab({ tasks, projectId, onRefresh }: { tasks: TaskRow[]; projectId
                 <th>Planned end</th>
                 <th>Remarks</th>
                 <th>Status</th>
+                <th>Action</th>
+
                 <th style={{ width: 48, textAlign: 'center' }}></th>
               </tr>
             </thead>
