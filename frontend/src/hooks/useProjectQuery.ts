@@ -1,6 +1,8 @@
-import { useProjectIdFromUrl } from '@/context/ProjectContext';
+import { useProjectIdFromUrl, useProjectContext } from '@/context/ProjectContext';
 
 export function useProjectQuery(): string {
   const projectId = useProjectIdFromUrl();
-  return projectId ? `?projectId=${projectId}` : '';
+  const { activeProject } = useProjectContext();
+  const id = activeProject?.id ?? projectId;
+  return id ? `?projectId=${id}` : '';
 }

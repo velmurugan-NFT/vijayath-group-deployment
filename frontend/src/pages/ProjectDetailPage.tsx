@@ -196,11 +196,27 @@ function TabTable({ title, link, linkLabel = 'Open', headers, rows, delayed, col
   );
 }
 
-type WbsCat = { name: string; lineItems: { id: string; description: string; estimated: number; committed: number; paid: number; contributingPOs?: { poNumber: string }[] }[] };
+type WbsCat = {
+  name: string;
+  lineItems: {
+    id: string;
+    description: string;
+    estimated: number;
+    committed: number;
+    paid: number;
+    contributingPOs?: { id: string; poNumber: string }[];
+  }[];
+};
+
 type TaskRow = {
-  id: string; title: string; department: string; status: string;
-  isDelayed: boolean; remarks?: string | null;
-  plannedStart?: string | null; plannedEnd?: string | null;
+  id: string;
+  title: string;
+  department: string;
+  status: string;
+  isDelayed: boolean;
+  remarks?: string | null;
+  plannedStart?: string | null;
+  plannedEnd?: string | null;
 };
 type PoRow = { id: string; poNumber: string; totalAmount: number; status: string; vendor?: { name: string } };
 type PayRow = { id: string; amount: number; status: string; po?: { poNumber: string }; payment?: { paidAt: string } | null };
@@ -705,13 +721,15 @@ function WbsTable({ wbs, projectId, onRefresh }: { wbs: unknown[]; projectId: st
                           {/* Description + contributing POs */}
                           <td className="name-cell" style={{ paddingLeft: 20, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {li.description}
-                            {li.contributingPOs?.length ? (
-                              <div className="secondary">
-                                {li.contributingPOs.map((p) => (
-                                  <Link key={p.poNumber} to="/quotations" className="underline mr-2">{p.poNumber}</Link>
-                                ))}
-                              </div>
-                            ) : null}
+                          {li.contributingPOs?.length ? (
+                          <div className="secondary">
+                            {li.contributingPOs.map((p) => (
+                              <Link key={p.poNumber} to={`/pos/${p.id}`} className="underline mr-2">
+                                {p.poNumber}
+                              </Link>
+                            ))}
+                          </div>
+                        ) : null}
                           </td>
                           <td className="right amt">{formatINR(li.estimated)}</td>
                           <td className="right amt">{formatINR(li.committed)}</td>

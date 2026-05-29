@@ -51,12 +51,15 @@ export function TasksPage() {
     plannedEnd: '',
   });
 
-  const load = () => api<Task[]>(`/tasks${pq}`).then(setTasks);
+  const load = () => {
+  console.log('fetching tasks with:', pq); // check this
+  api<Task[]>(`/tasks${pq}`).then(setTasks);
+};
 
   // Re-fetch whenever the active project changes (top-bar switch)
-  useEffect(() => {
-    load();
-  }, [activeProject?.id, pq]);  // ← activeProject.id is the key dependency
+ useEffect(() => {
+  load();
+}, [pq]); // ← activeProject.id is the key dependency
 
   useEffect(() => {
     api<Project[]>('/projects').then(setProjects);

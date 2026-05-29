@@ -114,7 +114,12 @@ router.get('/:id/wbs', requireAuth, async (req: AuthRequest, res, next) => {
           ...li,
           remaining: N(li.estimated) - N(li.paid),
           variance: N(li.committed) - N(li.estimated),
-          contributingPOs: pos.map((p) => ({ poNumber: p.po.poNumber, vendor: p.po.vendor.name, amount: N(p.amount) })),
+          contributingPOs: pos.map((p) => ({ 
+            id: p.po.id,           // ← add this
+            poNumber: p.po.poNumber, 
+            vendor: p.po.vendor.name, 
+            amount: N(p.amount) 
+          })),
         };
       })),
       totals: {

@@ -9,6 +9,7 @@ import { api } from '@/lib/api';
 import { ROLE_LABELS } from '@/lib/roleUtils';
 import { BrandMark } from '@/components/design/BrandMark';
 import { cn } from '@/lib/utils';
+import { useProjectContext } from '@/context/ProjectContext';
 
 type NavItem = { to: string; label: string; icon: typeof LayoutDashboard; roles?: string[]; badgeKey?: 'approvals' | 'tasks' };
 
@@ -86,13 +87,14 @@ function NavGroup({
 
 export function Sidebar({ mobileOpen, onClose }: { mobileOpen?: boolean; onClose?: () => void }) {
   const { user, logout } = useAuth();
+    const { activeProject } = useProjectContext(); 
   const [badges, setBadges] = useState({ pendingApprovals: 0, delayedTasks: 0 });
 
   useEffect(() => {
     api<{ pendingApprovals: number; delayedTasks: number }>('/nav/summary')
       .then(setBadges)
       .catch(() => {});
-  }, [user]);
+  }, [user, activeProject?.id]); 
 
   const initials = user?.name
     ?.split(' ')

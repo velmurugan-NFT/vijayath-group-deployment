@@ -8,7 +8,7 @@ import { useProjectQuery } from '@/hooks/useProjectQuery';
 import { PageHeader } from '@/components/PageHeader';
 import { Card, CardHeader, CardBody } from '@/components/design/Card';
 import { useProjectContext } from '@/context/ProjectContext';
-import { Loader2, Send, Zap } from 'lucide-react';
+import { Loader2, Send, Zap, Trash2 } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -16,8 +16,6 @@ type VendorInvoice = {
   id: string;
   invoiceNumber: string;
   amount: number;
-  // ✅ These are computed by the backend from PaymentRequest → Payment
-  // (NOT from VendorInvoicePayment which is a separate sub-system)
   paidAmount: number;
   isPaid: boolean;
   po?: {
@@ -34,13 +32,11 @@ type PaymentItem = {
   createdAt: string;
   purpose?: string;
   po?: { poNumber: string; vendor?: { name: string } };
-  vendorInvoice?: { invoiceNumber: string };
+  vendorInvoice?: { id: string; invoiceNumber: string };
   payment?: { utr: string; paidAt: string };
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-// paidAmount and isPaid come directly from the backend (computed via
-// PaymentRequest → Payment, which is the real payment trail).
 
 function paidAmount(inv: VendorInvoice): number {
   return Number(inv.paidAmount ?? 0);
@@ -54,6 +50,75 @@ function isFullyPaid(inv: VendorInvoice): boolean {
   return inv.isPaid === true;
 }
 
+// ── Delete Confirm Modal ──────────────────────────────────────────────────────
+
+function DeleteConfirmModal({
+  item,
+  onConfirm,
+  onCancel,
+  deleting,
+}: {
+  item: PaymentItem | null;
+  onConfirm: () => void;
+  onCancel: () => void;
+  deleting: boolean;
+}) {
+  if (!item) return null;
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(2px)',
+    }}>
+      <div style={{
+        background: 'var(--surface)', borderRadius: 12,
+        padding: '1.75rem 2rem', maxWidth: 420, width: '90%',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+        border: '1px solid var(--line)',
+      }}>
+        {/* Red trash icon */}
+        <div style={{
+          width: 44, height: 44, borderRadius: '50%',
+          background: '#fee2e2', display: 'flex',
+          alignItems: 'center', justifyContent: 'center', marginBottom: 14,
+        }}>
+          <Trash2 size={20} color="#ef4444" />
+        </div>
+        <div style={{ fontWeight: 700, fontSize: '1rem', marginBottom: 6, color: 'var(--ink)' }}>
+          Delete payment request?
+        </div>
+        <div style={{ fontSize: '0.875rem', color: 'var(--muted)', marginBottom: 20, lineHeight: 1.5 }}>
+          You are about to delete the payment request for{' '}
+          <strong style={{ color: 'var(--ink)' }}>
+            {item.vendorInvoice?.invoiceNumber ?? item.purpose ?? '—'}
+          </strong>{' '}
+          ({formatINR(item.amount)}). This action cannot be undone.
+        </div>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={deleting}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={deleting}
+            onClick={onConfirm}
+            style={{
+              background: '#ef4444', color: '#fff', border: 'none',
+              borderRadius: 7, padding: '7px 18px', fontWeight: 600,
+              fontSize: '0.875rem', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}
+          >
+            {deleting
+              ? <><Loader2 style={{ width: 14, height: 14 }} className="animate-spin" /> Deleting…</>
+              : 'Yes, delete it'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function PaymentsPage() {
@@ -61,21 +126,28 @@ export function PaymentsPage() {
   const pq = useProjectQuery();
   const { activeProject } = useProjectContext();
 
-  const [items,      setItems]      = useState<PaymentItem[]>([]);
-  const [invoices,   setInvoices]   = useState<VendorInvoice[]>([]);
-  const [invoiceId,  setInvoiceId]  = useState('');
-  const [amount,     setAmount]     = useState(0);
-  const [utr,        setUtr]        = useState('');
-  const [approvedId, setApprovedId] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [executing,  setExecuting]  = useState(false);
+  const [items,        setItems]        = useState<PaymentItem[]>([]);
+  const [invoices,     setInvoices]     = useState<VendorInvoice[]>([]);
+  const [invoiceId,    setInvoiceId]    = useState('');
+  const [amount,       setAmount]       = useState(0);
+  const [utr,          setUtr]          = useState('');
+  const [approvedId,   setApprovedId]   = useState('');
+  const [submitting,   setSubmitting]   = useState(false);
+  const [executing,    setExecuting]    = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<PaymentItem | null>(null);
+  const [deleting,     setDeleting]     = useState(false);
 
   const selectedInvoice = invoices.find((inv) => inv.id === invoiceId) ?? null;
+  const payableInvoices = invoices.filter((inv) => !isFullyPaid(inv));
 
-  // ── Derived: split invoices into payable vs fully paid ───────────────────
-
-  const payableInvoices   = invoices.filter((inv) => !isFullyPaid(inv));
-  const fullyPaidCount    = invoices.filter((inv) =>  isFullyPaid(inv)).length;
+  // ── Check if invoice already has a pending/approved payment ──────────────
+  // Invoices that already have an active (non-paid, non-deleted) payment request
+  const activePaymentInvoiceIds = new Set(
+    items
+      .filter((p) => ['PENDING_APPROVAL', 'APPROVED', 'DRAFT'].includes(p.status))
+      .map((p) => p.vendorInvoice?.id)
+      .filter(Boolean) as string[]
+  );
 
   // ── Data loading ──────────────────────────────────────────────────────────
 
@@ -92,23 +164,21 @@ export function PaymentsPage() {
     setAmount(0);
   }, [activeProject?.id]);
 
-  // When invoice selected, auto-fill its remaining balance (not full amount)
   const handleInvoiceChange = (id: string) => {
     setInvoiceId(id);
     const inv = invoices.find((i) => i.id === id);
-    // Pre-fill with remaining balance so user pays what's left
     setAmount(inv ? invoiceBalance(inv) : 0);
   };
 
-  // ── Submit: create + submit payment request ───────────────────────────────
+  // ── Submit ────────────────────────────────────────────────────────────────
 
   const create = async () => {
     if (!invoiceId || !selectedInvoice?.po?.id) { toast.error('Select an invoice'); return; }
     if (!amount || amount <= 0)                  { toast.error('Enter a valid amount'); return; }
 
-    const balance = invoiceBalance(selectedInvoice);
-    if (amount > balance) {
-      toast.error(`Amount exceeds remaining balance of ${formatINR(balance)}`);
+    // ✅ Block if this invoice already has an active payment request
+    if (activePaymentInvoiceIds.has(invoiceId)) {
+      toast.error('This invoice already has a pending or approved payment request');
       return;
     }
 
@@ -117,9 +187,10 @@ export function PaymentsPage() {
       const pr = await api<{ id: string }>('/payments', {
         method: 'POST',
         body: JSON.stringify({
-          poId:    selectedInvoice.po.id,
+          poId:            selectedInvoice.po.id,
           amount,
-          purpose: `Invoice ${selectedInvoice.invoiceNumber}`,
+          purpose:         `Invoice ${selectedInvoice.invoiceNumber}`,
+          vendorInvoiceId: selectedInvoice.id,
         }),
       });
       await api(`/payments/${pr.id}/submit`, { method: 'POST' });
@@ -127,7 +198,7 @@ export function PaymentsPage() {
       setInvoiceId('');
       setAmount(0);
       load();
-      loadInvoices(); // ✅ refresh so paid invoices disappear from dropdown
+      loadInvoices();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to submit');
     } finally {
@@ -164,7 +235,7 @@ export function PaymentsPage() {
       setApprovedId('');
       setUtr('');
       load();
-      loadInvoices(); // ✅ refresh so invoice disappears from dropdown once fully paid
+      loadInvoices();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to execute');
     } finally {
@@ -172,7 +243,23 @@ export function PaymentsPage() {
     }
   };
 
-  // ── Paid / Unpaid counts ──────────────────────────────────────────────────
+  // ── Delete ────────────────────────────────────────────────────────────────
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api(`/payments/${deleteTarget.id}`, { method: 'DELETE' });
+      toast.success('Payment request deleted');
+      setDeleteTarget(null);
+      load();
+      loadInvoices();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete');
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const paidCount   = items.filter((i) => i.status === 'PAID').length;
   const unpaidCount = items.filter((i) => i.status !== 'PAID').length;
@@ -181,6 +268,28 @@ export function PaymentsPage() {
 
   return (
     <div>
+      <style>{`
+        .amount-locked-input {
+          background: #ffffff !important;
+          background-color: #ffffff !important;
+          color: var(--ink) !important;
+          -webkit-text-fill-color: var(--ink) !important;
+          opacity: 1 !important;
+          border: 1px solid var(--line) !important;
+          border-radius: 7px !important;
+          height: 36px !important;
+          padding: 0 12px !important;
+          width: 100% !important;
+          box-shadow: none !important;
+        }
+      `}</style>
+      <DeleteConfirmModal
+        item={deleteTarget}
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleteTarget(null)}
+        deleting={deleting}
+      />
+
       <PageHeader
         title="Payments"
         subtitle={
@@ -193,24 +302,28 @@ export function PaymentsPage() {
       {/* ── New payment request ── */}
       <Card className="mb-5">
         <CardHeader
-          title="New payment Request"
-          subtitle="select a vendor invoice"
+          title="New Payment Request"
+          subtitle="Select a vendor invoice"
         />
         <CardBody>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12, maxWidth: 680 }}>
+          {/* ── Row: Invoice selector + Amount + Submit ── */}
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', maxWidth: 900 }}>
 
-            {/* Invoice selector — ✅ only payableInvoices shown */}
-            <div className="field" style={{ marginBottom: 0 }}>
+            {/* Invoice selector */}
+            <div className="field" style={{ marginBottom: 0, flex: 1, minWidth: 220 }}>
               <label>Vendor Invoice *</label>
               <select value={invoiceId} onChange={(e) => handleInvoiceChange(e.target.value)}>
                 <option value="">— select invoice —</option>
                 {payableInvoices.map((inv) => {
-                  const bal = invoiceBalance(inv);
+                  const bal        = invoiceBalance(inv);
+                  const hasActive  = activePaymentInvoiceIds.has(inv.id);
                   return (
-                    <option key={inv.id} value={inv.id}>
+                    <option key={inv.id} value={inv.id} disabled={hasActive}>
                       {inv.invoiceNumber}
                       {inv.po?.vendor?.name ? ` — ${inv.po.vendor.name}` : ''}
-                      {` (balance: ${formatINR(bal)})`}
+                      {hasActive
+                        ? ' — payment pending'
+                        : ` (balance: ${formatINR(bal)})`}
                     </option>
                   );
                 })}
@@ -218,84 +331,22 @@ export function PaymentsPage() {
                   <option disabled>All invoices are fully paid</option>
                 )}
               </select>
-
-              {/* ✅ Hint showing how many invoices are hidden because fully paid */}
-              {fullyPaidCount > 0 && (
-                <p style={{ fontSize: '0.75rem', color: 'var(--muted-foreground)', marginTop: 4 }}>
-                  {fullyPaidCount} invoice{fullyPaidCount > 1 ? 's' : ''} 
-                </p>
-              )}
             </div>
 
-            {/* Amount — pre-filled with remaining balance, still editable */}
-            <div className="field" style={{ marginBottom: 0 }}>
-              <label>Amount (₹) *</label>
+            {/* Amount — read-only once invoice is selected */}
+            <div className="field" style={{ marginBottom: 0, width: 200, flexShrink: 0 }}>
+              <label>Amount (₹)</label>
               <input
                 type="number"
-                min="1"
-                max={selectedInvoice ? invoiceBalance(selectedInvoice) : undefined}
                 value={amount || ''}
                 placeholder="0"
-                onChange={(e) => setAmount(+e.target.value)}
-                style={
-                  selectedInvoice && amount > invoiceBalance(selectedInvoice)
-                    ? { borderColor: 'var(--destructive)' }
-                    : {}
-                }
+                onChange={(e) => { if (!selectedInvoice) setAmount(+e.target.value); }}
+                onKeyDown={(e) => { if (selectedInvoice) e.preventDefault(); }}
+                className="amount-locked-input"
+                style={{ fontWeight: 700, cursor: selectedInvoice ? 'not-allowed' : undefined }}
               />
             </div>
-          </div>
 
-          {/* Invoice summary card */}
-          {selectedInvoice && (
-            <div
-              style={{
-                marginTop: 12,
-                maxWidth: 460,
-                background: 'var(--muted)',
-                borderRadius: 8,
-                padding: '10px 16px',
-                fontSize: '0.83rem',
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr 1fr',
-                gap: 8,
-              }}
-            >
-              <div>
-                <div style={{ color: 'var(--muted-foreground)', marginBottom: 2 }}>Invoice Total</div>
-                <div style={{ fontWeight: 700 }}>{formatINR(selectedInvoice.amount)}</div>
-              </div>
-              <div>
-                <div style={{ color: 'var(--muted-foreground)', marginBottom: 2 }}>Already Paid</div>
-                <div style={{ fontWeight: 700, color: 'var(--success, #16a34a)' }}>
-                  {formatINR(paidAmount(selectedInvoice))}
-                </div>
-              </div>
-              <div>
-                <div style={{ color: 'var(--muted-foreground)', marginBottom: 2 }}>Balance</div>
-                <div style={{ fontWeight: 700, color: '#d97706' }}>
-                  {formatINR(invoiceBalance(selectedInvoice))}
-                </div>
-              </div>
-              {selectedInvoice.po && (
-                <div style={{ gridColumn: '1 / -1' }}>
-                  <div style={{ color: 'var(--muted-foreground)', marginBottom: 2 }}>PO</div>
-                  <div style={{ fontWeight: 600 }}>
-                    {selectedInvoice.po.poNumber}
-                    {selectedInvoice.po.vendor?.name && ` · ${selectedInvoice.po.vendor.name}`}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {selectedInvoice && amount > invoiceBalance(selectedInvoice) && (
-            <p style={{ color: 'var(--destructive)', fontSize: '0.8rem', marginTop: 6 }}>
-              Amount exceeds remaining balance of {formatINR(invoiceBalance(selectedInvoice))}
-            </p>
-          )}
-
-          <div style={{ marginTop: 16 }}>
             <button
               type="button"
               className="btn btn-primary"
@@ -303,15 +354,14 @@ export function PaymentsPage() {
               disabled={
                 !invoiceId ||
                 !amount ||
-                (!!selectedInvoice && amount > invoiceBalance(selectedInvoice)) ||
-                submitting
+                submitting ||
+                activePaymentInvoiceIds.has(invoiceId)
               }
+              style={{ flexShrink: 0 }}
             >
-              {submitting ? (
-                <><Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> Submitting…</>
-              ) : (
-                <><Send style={{ width: 13, height: 13 }} /> Submit request</>
-              )}
+              {submitting
+                ? <><Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> Submitting…</>
+                : <><Send style={{ width: 13, height: 13 }} /> Submit Request</>}
             </button>
           </div>
         </CardBody>
@@ -341,11 +391,9 @@ export function PaymentsPage() {
                   onClick={execute}
                   disabled={!utr.trim() || executing}
                 >
-                  {executing ? (
-                    <><Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> Executing…</>
-                  ) : (
-                    <><Zap style={{ width: 13, height: 13 }} /> Execute payment</>
-                  )}
+                  {executing
+                    ? <><Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> Executing…</>
+                    : <><Zap style={{ width: 13, height: 13 }} /> Execute payment</>}
                 </button>
                 <button
                   type="button"
@@ -383,15 +431,14 @@ export function PaymentsPage() {
               </thead>
               <tbody>
                 {items.map((p) => {
-                  const isPaid = p.status === 'PAID';
+                  const isPaid     = p.status === 'PAID';
+                  const canDelete  = !isPaid; // allow delete for non-paid requests
                   return (
                     <tr key={p.id}>
                       <td style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}>
                         {p.vendorInvoice?.invoiceNumber ?? p.purpose ?? '—'}
                       </td>
-                      <td style={{ fontWeight: 600 }}>
-                        {p.po?.poNumber ?? '—'}
-                      </td>
+                      <td style={{ fontWeight: 600 }}>{p.po?.poNumber ?? '—'}</td>
                       <td style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
                         {p.po?.vendor?.name ?? '—'}
                       </td>
@@ -402,17 +449,12 @@ export function PaymentsPage() {
                         {formatINR(p.amount)}
                       </td>
                       <td>
-                        <span
-                          style={{
-                            display: 'inline-block',
-                            padding: '2px 10px',
-                            borderRadius: 999,
-                            fontSize: '0.75rem',
-                            fontWeight: 600,
-                            background: isPaid ? 'var(--success, #16a34a)' : 'var(--destructive, #dc2626)',
-                            color: '#fff',
-                          }}
-                        >
+                        <span style={{
+                          display: 'inline-block', padding: '2px 10px',
+                          borderRadius: 999, fontSize: '0.75rem', fontWeight: 600,
+                          background: isPaid ? 'var(--success, #16a34a)' : 'var(--destructive, #dc2626)',
+                          color: '#fff',
+                        }}>
                           {isPaid ? 'Paid' : 'Unpaid'}
                         </span>
                       </td>
@@ -420,7 +462,8 @@ export function PaymentsPage() {
                         {p.payment?.utr ?? '—'}
                       </td>
                       <td style={{ textAlign: 'center' }}>
-                        <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                        <div style={{ display: 'inline-flex', flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center' }}>
+                          {/* Approve button */}
                           {p.status === 'PENDING_APPROVAL' && user?.role !== 'PROJECT_HEAD' && (
                             <button
                               type="button"
@@ -431,6 +474,7 @@ export function PaymentsPage() {
                               Approve
                             </button>
                           )}
+                          {/* Execute button */}
                           {p.status === 'APPROVED' && (
                             <button
                               type="button"
@@ -441,7 +485,24 @@ export function PaymentsPage() {
                               <Zap style={{ width: 11, height: 11 }} /> Execute
                             </button>
                           )}
-                          {!['PENDING_APPROVAL', 'APPROVED'].includes(p.status) && (
+                          {/* Delete button — shown for all non-paid requests */}
+                          {canDelete && (
+                            <button
+                              type="button"
+                              className="btn btn-sm"
+                              title="Delete payment request"
+                              style={{
+                                background: 'none', border: '1px solid #fca5a5',
+                                color: '#ef4444', fontWeight: 600,
+                                display: 'flex', alignItems: 'center', gap: 4,
+                              }}
+                              onClick={() => setDeleteTarget(p)}
+                            >
+                              <Trash2 style={{ width: 13, height: 13 }} />
+                            </button>
+                          )}
+                          {/* Em-dash for paid rows with no actions */}
+                          {isPaid && (
                             <span style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>—</span>
                           )}
                         </div>

@@ -22,7 +22,6 @@ type Inv = {
   invoiceNumber: string;
   amount: number;
   invoiceDate: string;
-  // ✅ Computed by backend: sum of Payment.amount via PaymentRequest → Payment
   paidAmount: number;
   isPaid: boolean;
   po?: {
@@ -46,38 +45,19 @@ type Po = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Sum of all invoice amounts already raised against a PO (from the items list). */
 function poInvoicedFromItems(items: Inv[], poId: string, excludeInvId?: string) {
   return items
     .filter((i) => i.po?.id === poId && i.id !== excludeInvId)
     .reduce((s, i) => s + (i.amount ?? 0), 0);
 }
 
-/**
- * paidAmount comes directly from the backend (PaymentRequest → Payment).
- * VendorInvoicePayment is a separate sub-system and is NOT used here.
- */
-function invoicePaidAmount(inv: Inv): number {
-  return Number(inv.paidAmount ?? 0);
+function poRemainingBalance(items: Inv[], po: Po, excludeInvId?: string): number {
+  const invoiced = poInvoicedFromItems(items, po.id, excludeInvId);
+  return Math.max(0, Number(po.totalAmount) - invoiced);
 }
 
-/**
- * Derive the display status for an invoice row:
- *   'PAID'            — backend confirms isPaid = true
- *   'FULLY_INVOICED'  — PO fully invoiced but not yet fully paid
- *   'PARTIAL'         — PO still has remaining balance
- */
-function invoiceDisplayStatus(
-  inv: Inv,
-  items: Inv[],
-): 'PAID' | 'FULLY_INVOICED' | 'PARTIAL' {
-  if (inv.isPaid === true) return 'PAID';
-
-  const invoiced = poInvoicedFromItems(items, inv.po?.id ?? '');
-  const bal = Number(inv.po?.totalAmount ?? 0) - invoiced;
-  if (bal <= 0) return 'FULLY_INVOICED';
-
-  return 'PARTIAL';
+function invoicePaidAmount(inv: Inv): number {
+  return Number(inv.paidAmount ?? 0);
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -89,7 +69,6 @@ export function VendorInvoicesPage() {
   const [items, setItems] = useState<Inv[]>([]);
   const [pos,   setPos]   = useState<Po[]>([]);
 
-  // "Add invoice" dialog
   const [addOpen, setAddOpen] = useState(false);
   const [addForm, setAddForm] = useState({
     poId:          '',
@@ -98,14 +77,11 @@ export function VendorInvoicesPage() {
     invoiceDate:   new Date().toISOString().slice(0, 10),
   });
 
-  // "Edit invoice" dialog
   const [editTarget, setEditTarget] = useState<Inv | null>(null);
   const [editForm,   setEditForm]   = useState({ amount: 0, invoiceDate: '' });
 
   // ── Data loading ────────────────────────────────────────────────────────
 
-  // NOTE: make sure your /vendor-invoices endpoint includes
-  // payments: { id, amount, status } in its response shape.
   const load = () =>
     api<Inv[]>(`/vendor-invoices${pq}`).then(setItems);
 
@@ -122,22 +98,14 @@ export function VendorInvoicesPage() {
 
   // ── Derived: add dialog ─────────────────────────────────────────────────
 
-  const addPo = pos.find((p) => p.id === addForm.poId);
-
+  const addPo              = pos.find((p) => p.id === addForm.poId);
   const addAlreadyInvoiced = addPo ? poInvoicedFromItems(items, addPo.id) : 0;
-  const addPoBalance       = addPo ? Number(addPo.totalAmount) - addAlreadyInvoiced : 0;
+  const addPoBalance       = addPo ? poRemainingBalance(items, addPo) : 0;
   const addAmountExceeds   = addForm.amount > addPoBalance;
 
-  // ✅ Warn if the selected PO already has an invoice (but still allow if balance remains)
-  const addPoExistingInvoices = addPo
-    ? items.filter((i) => i.po?.id === addPo.id)
-    : [];
-  const addPoAlreadyHasInvoice = addPoExistingInvoices.length > 0;
-
   const handleAddPoChange = (poId: string) => {
-    const po      = pos.find((p) => p.id === poId);
-    const invoiced = po ? poInvoicedFromItems(items, po.id) : 0;
-    const bal      = po ? Number(po.totalAmount) - invoiced : 0;
+    const po  = pos.find((p) => p.id === poId);
+    const bal = po ? poRemainingBalance(items, po) : 0;
     setAddForm((f) => ({ ...f, poId, amount: bal }));
   };
 
@@ -146,8 +114,8 @@ export function VendorInvoicesPage() {
   const editAlreadyInvoiced = editTarget
     ? poInvoicedFromItems(items, editTarget.po?.id ?? '', editTarget.id)
     : 0;
-  const editPoTotal      = Number(editTarget?.po?.totalAmount ?? 0);
-  const editPoBalance    = editTarget ? editPoTotal - editAlreadyInvoiced : Infinity;
+  const editPoTotal       = Number(editTarget?.po?.totalAmount ?? 0);
+  const editPoBalance     = editTarget ? editPoTotal - editAlreadyInvoiced : Infinity;
   const editAmountExceeds = editForm.amount > editPoBalance;
 
   // ── Submit: create invoice ──────────────────────────────────────────────
@@ -156,26 +124,21 @@ export function VendorInvoicesPage() {
     if (!addForm.poId)                          { toast.error('Select a PO'); return; }
     if (!addForm.amount || addForm.amount <= 0) { toast.error('Enter invoice amount'); return; }
     if (addAmountExceeds) {
-      toast.error(`Amount exceeds PO balance of ${formatINR(addPoBalance)}`);
+      toast.error(`Amount exceeds remaining PO balance of ${formatINR(addPoBalance)}`);
       return;
     }
     try {
-      const result = await api<{ _merged?: boolean; invoiceNumber?: string }>(
+      const result = await api<{ invoiceNumber?: string }>(
         '/vendor-invoices',
         { method: 'POST', body: JSON.stringify(addForm) },
       );
-      // Backend merges into existing invoice when PO already has one
-      if (result._merged) {
-        toast.success(`Amount added to existing invoice ${result.invoiceNumber}`);
-      } else {
-        toast.success(`Vendor invoice ${result.invoiceNumber} created`);
-      }
+      toast.success(`Vendor invoice ${result.invoiceNumber} created`);
       setAddOpen(false);
       setAddForm({
-        poId: '',
-        amount: 0,
+        poId:          '',
+        amount:        0,
         invoiceNumber: '',
-        invoiceDate: new Date().toISOString().slice(0, 10),
+        invoiceDate:   new Date().toISOString().slice(0, 10),
       });
       load();
       loadPos();
@@ -253,7 +216,6 @@ export function VendorInvoicesPage() {
             header: 'Invoice Amount',
             render: (r) => formatINR(r.amount),
           },
-          // ✅ Amount paid column — shows how much has been paid against this invoice
           {
             key: 'paid_amount',
             header: 'Paid',
@@ -269,39 +231,28 @@ export function VendorInvoicesPage() {
           {
             key: 'status',
             header: 'Status',
-            render: (r) => {
-              const status = invoiceDisplayStatus(r, items);
-              if (status === 'PAID') {
-                return (
-                  <Badge
-                    variant="default"
-                    className="bg-green-600 hover:bg-green-600 text-white"
-                  >
-                    Paid
-                  </Badge>
-                );
-              }
-              if (status === 'FULLY_INVOICED') {
-                return <Badge variant="default">Fully Invoiced</Badge>;
-              }
-              return <Badge variant="secondary">Partial</Badge>;
-            },
+            render: (r) =>
+              r.isPaid ? (
+                <Badge className="bg-green-600 hover:bg-green-600 text-white">Paid</Badge>
+              ) : (
+                <Badge variant="secondary">Unpaid</Badge>
+              ),
           },
           { key: 'date', header: 'Date', render: (r) => formatDate(r.invoiceDate) },
-          {
-            key: 'actions',
-            header: '',
-            render: (r) => (
-              <button
-                type="button"
-                title="Edit invoice"
-                onClick={() => openEdit(r)}
-                className="p-2 rounded-md hover:bg-blue-100 text-muted-foreground hover:text-blue-600 transition"
-              >
-                <Pencil size={16} />
-              </button>
-            ),
-          },
+      {
+          key: 'actions',
+          header: 'Action',
+          render: (r) => (
+            <button
+              type="button"
+              title="Edit Invoice"
+              onClick={() => openEdit(r)}
+              className="flex items-center justify-center p-2 rounded-md hover:bg-blue-100 text-muted-foreground hover:text-blue-600 transition"
+            >
+              <Pencil size={16} />
+            </button>
+          ),
+        },
         ]}
         data={items}
         keyFn={(r) => r.id}
@@ -311,45 +262,54 @@ export function VendorInvoicesPage() {
       <FormDialog
         open={addOpen}
         onOpenChange={setAddOpen}
-        title={addPoAlreadyHasInvoice ? `Add amount to ${addPoExistingInvoices[0]?.invoiceNumber}` : 'Add vendor invoice'}
+        title="Add vendor invoice"
         onSubmit={submitAdd}
       >
-        {/* PO selector */}
         <div>
           <Label>PO (approved only) *</Label>
-          <select
-            className="w-full border rounded px-3 py-2 mt-1"
-            value={addForm.poId}
-            onChange={(e) => handleAddPoChange(e.target.value)}
-          >
-            <option value="">— Select PO —</option>
-            {pos.map((p) => {
-              const invoiced = poInvoicedFromItems(items, p.id);
-              const bal = Number(p.totalAmount) - invoiced;
-              return (
-                <option key={p.id} value={p.id} disabled={bal <= 0}>
-                  {p.poNumber}{p.vendor?.name ? ` (${p.vendor.name})` : ''}
-                  {bal <= 0 ? ' — fully invoiced' : ''}
-                </option>
-              );
-            })}
-            {pos.length === 0 && <option disabled>No approved POs found</option>}
-          </select>
+          {/* Wrapper gives us a positioning context for the overlay */}
+          <div style={{ position: 'relative' }}>
+            <select
+              className="w-full border rounded px-3 py-2 mt-1"
+              value={addForm.poId}
+              onChange={(e) => handleAddPoChange(e.target.value)}
+              style={{ color: addForm.poId ? 'transparent' : undefined }}
+            >
+              <option value="">— Select PO —</option>
+              {pos.map((p) => {
+                const remaining = poRemainingBalance(items, p);
+                const fullyUsed = remaining <= 0;
+                return (
+                  <option key={p.id} value={p.id} disabled={fullyUsed}>
+                    {p.poNumber}{p.vendor?.name ? ` (${p.vendor.name})` : ''}
+                    {fullyUsed ? ' — fully invoiced' : ` — ${formatINR(remaining)} remaining`}
+                  </option>
+                );
+              })}
+              {pos.length === 0 && <option disabled>No approved POs found</option>}
+            </select>
+
+            {/* Overlay: shows only PO# (Vendor Name) when a PO is selected */}
+            {addForm.poId && addPo && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: '50%',
+                  left: 12,
+                  transform: 'translateY(-50%)',
+                  pointerEvents: 'none',
+                  fontSize: '0.9rem',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  maxWidth: 'calc(100% - 36px)',
+                }}
+              >
+                {addPo.poNumber}{addPo.vendor?.name ? ` (${addPo.vendor.name})` : ''}
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* ✅ Info: PO already has an invoice — this amount will be MERGED into it */}
-        {addPoAlreadyHasInvoice && addPoBalance > 0 && (
-          <div className="rounded-md border border-blue-300 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-            <p className="font-semibold mb-1">
-              Amount will be added to {addPoExistingInvoices[0]?.invoiceNumber}
-            </p>
-            <p>
-             <strong>{formatINR(addPoBalance)}</strong>.
-            </p>
-          </div>
-        )}
-
-        {/* Balance info */}
         {addPo && (
           <div className="rounded-md bg-muted px-4 py-3 text-sm grid grid-cols-3 gap-2 text-center">
             <div>
@@ -361,17 +321,14 @@ export function VendorInvoicesPage() {
               <p className="font-semibold">{formatINR(addAlreadyInvoiced)}</p>
             </div>
             <div>
-              <p className="text-muted-foreground text-xs">Available Balance</p>
+              <p className="text-muted-foreground text-xs">Remaining Balance</p>
               <p className="font-semibold text-orange-600">{formatINR(addPoBalance)}</p>
             </div>
           </div>
         )}
 
-        {/* Invoice amount */}
         <div>
-          <Label>
-            {addPoAlreadyHasInvoice ? 'Amount to add (₹) *' : 'Invoice Amount (₹) *'}
-          </Label>
+          <Label>Invoice Amount (₹) *</Label>
           <Input
             type="number"
             min={1}
@@ -382,27 +339,20 @@ export function VendorInvoicesPage() {
           />
           {addAmountExceeds && (
             <p className="text-xs text-destructive mt-1">
-              Exceeds available balance of {formatINR(addPoBalance)}
+              Exceeds remaining balance of {formatINR(addPoBalance)}
             </p>
           )}
         </div>
 
-        {/* Invoice # — only shown when creating a brand-new invoice */}
-        {!addPoAlreadyHasInvoice && (
-          <div>
-            <Label>Invoice #</Label>
-            <Input
-              placeholder="Auto-generated on save"
-              value={addForm.invoiceNumber ?? ''}
-              onChange={(e) => setAddForm({ ...addForm, invoiceNumber: e.target.value })}
-            />
-            <p className="text-xs text-muted-foreground mt-1">
-              Leave blank to auto-generate, or type a custom number.
-            </p>
-          </div>
-        )}
+        <div>
+          <Label>Invoice #</Label>
+          <Input
+            placeholder="Auto-generated on save"
+            value={addForm.invoiceNumber ?? ''}
+            onChange={(e) => setAddForm({ ...addForm, invoiceNumber: e.target.value })}
+          />
+        </div>
 
-        {/* Date */}
         <div>
           <Label>Date</Label>
           <Input
@@ -422,7 +372,6 @@ export function VendorInvoicesPage() {
       >
         {editTarget && (
           <>
-            {/* PO balance info */}
             <div className="rounded-md bg-muted px-4 py-3 text-sm grid grid-cols-3 gap-2 text-center">
               <div>
                 <p className="text-muted-foreground text-xs">PO Total</p>
@@ -438,8 +387,7 @@ export function VendorInvoicesPage() {
               </div>
             </div>
 
-            {/* ✅ Payment summary — shows how much is already paid on this invoice */}
-            {(editTarget.payments?.length ?? 0) > 0 && (
+            {invoicePaidAmount(editTarget) > 0 && (
               <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm grid grid-cols-2 gap-2 text-center">
                 <div>
                   <p className="text-muted-foreground text-xs">Invoice Amount</p>
@@ -479,6 +427,8 @@ export function VendorInvoicesPage() {
                 onChange={(e) => setEditForm({ ...editForm, invoiceDate: e.target.value })}
               />
             </div>
+            
+
           </>
         )}
       </FormDialog>

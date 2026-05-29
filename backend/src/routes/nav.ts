@@ -9,6 +9,7 @@ const router = Router();
 router.get('/summary', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const pf = await projectFilter(req.user!);
+    const { projectId } = req.query;
     const scope = Object.keys(pf).length > 0 ? { project: pf } : {};
 
     const [pendingPOs, pendingPayments, delayedTasks] = await Promise.all([

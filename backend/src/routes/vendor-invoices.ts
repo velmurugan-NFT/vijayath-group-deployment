@@ -34,32 +34,27 @@ const includeAll = {
 };
 
 /**
- * Compute how much has actually been paid for a PO via PaymentRequest → Payment.
- * This is the real payment trail — VendorInvoicePayment is a separate sub-system.
- *
- * Schema path: PaymentRequest.poId + PaymentRequest.payment (Payment.amount)
- * A PaymentRequest is "paid" when it has a Payment record (execute step sets this).
+ * Compute how much has been paid for a SPECIFIC INVOICE
+ * via PaymentRequest → Payment, filtered by vendorInvoiceId.
  */
-async function getPaidAmountForPo(poId: string): Promise<number> {
-  const paidRequests = await prisma.paymentRequest.findMany({
+async function getPaidAmountForInvoice(invoiceId: string): Promise<number> {
+  const invoicePayments = await prisma.paymentRequest.findMany({
     where: {
-      poId,
-      payment: { isNot: null },   // has a Payment record = executed/paid
+      vendorInvoiceId: invoiceId,
+      payment: { isNot: null },
     },
     include: { payment: true },
   });
-  return paidRequests.reduce((sum, pr) => sum + Number(pr.payment!.amount), 0);
+  return invoicePayments.reduce((sum, pr) => sum + Number(pr.payment!.amount), 0);
 }
 
 /**
- * Attach paidAmount and isPaid to each invoice.
- * paidAmount = total paid via PaymentRequest → Payment for that PO.
- * isPaid     = paidAmount >= invoice.amount
+ * Attach paidAmount and isPaid to each invoice using per-invoice payment lookup.
  */
 async function attachPaidAmounts(invoices: Awaited<ReturnType<typeof fetchInvoices>>) {
   return Promise.all(
     invoices.map(async (inv) => {
-      const paidAmount = await getPaidAmountForPo(inv.poId);
+      const paidAmount = await getPaidAmountForInvoice(inv.id);
       return {
         ...inv,
         paidAmount,
@@ -88,14 +83,12 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
       po: { project: projectId ? { ...pf, id: projectId } : pf },
     });
 
-    // Attach paidAmount + isPaid computed from PaymentRequest → Payment
     const items = await attachPaidAmounts(raw);
-
     res.json(items);
   } catch (err) { next(err); }
 });
 
-// ── CREATE (or update existing invoice for the same PO) ───────────────────────
+// ── CREATE ────────────────────────────────────────────────────────────────────
 
 router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
   try {
@@ -111,36 +104,23 @@ router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
     const ctx = await getProjectContext(po.projectId);
     assertCan(req.user!, 'create', ctx ?? undefined);
 
-    const newAmount = amount ?? Number(po.totalAmount);
+    const newAmount = Number(amount ?? po.totalAmount);
 
-    const existing = await prisma.vendorInvoice.findFirst({
+    // Guard: new invoice must not exceed remaining PO balance
+    const existingInvoices = await prisma.vendorInvoice.findMany({
       where: { poId },
-      include: includeAll,
+      select: { amount: true },
     });
+    const alreadyInvoiced = existingInvoices.reduce(
+      (sum, inv) => sum + Number(inv.amount), 0
+    );
+    const remainingBalance = Number(po.totalAmount) - alreadyInvoiced;
 
-    if (existing) {
-      const updatedAmount = Number(existing.amount) + Number(newAmount);
-      if (updatedAmount > Number(po.totalAmount)) {
-        res.status(400).json({
-          error: `Total invoiced (₹${updatedAmount}) would exceed PO total (₹${po.totalAmount})`,
-        });
-        return;
-      }
-      const updated = await prisma.vendorInvoice.update({
-        where: { id: existing.id },
-        data: {
-          amount: updatedAmount,
-          invoiceDate: invoiceDate ? new Date(invoiceDate) : existing.invoiceDate,
-        },
-        include: includeAll,
+    if (newAmount > remainingBalance) {
+      res.status(400).json({
+        error: `Invoice amount (₹${newAmount}) exceeds remaining PO balance (₹${remainingBalance})`,
       });
-      const paidAmount = await getPaidAmountForPo(poId);
-      return res.status(200).json({
-        ...updated,
-        paidAmount,
-        isPaid: paidAmount >= updatedAmount,
-        _merged: true,
-      });
+      return;
     }
 
     const invoiceNumber = customNumber?.trim() || (await nextInvoiceNumber());
@@ -153,8 +133,8 @@ router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
       },
       include: includeAll,
     });
-    const paidAmount = await getPaidAmountForPo(poId);
-    res.status(201).json({ ...inv, paidAmount, isPaid: paidAmount >= newAmount });
+
+    res.status(201).json({ ...inv, paidAmount: 0, isPaid: false });
   } catch (err) { next(err); }
 });
 
@@ -174,10 +154,27 @@ router.patch('/:id', requireAuth, async (req: AuthRequest, res, next) => {
     const { amount, invoiceDate } = req.body;
 
     if (amount !== undefined) {
-      const paid = await getPaidAmountForPo(inv.poId);
+      // Must not go below what's already paid for this invoice
+      const paid = await getPaidAmountForInvoice(inv.id);
       if (amount < paid) {
         res.status(400).json({
           error: `Cannot reduce amount below already-paid total (₹${paid})`,
+        });
+        return;
+      }
+
+      // Must not exceed remaining PO balance (excluding this invoice)
+      const otherInvoices = await prisma.vendorInvoice.findMany({
+        where: { poId: inv.poId, id: { not: inv.id } },
+        select: { amount: true },
+      });
+      const otherInvoiced = otherInvoices.reduce(
+        (sum, i) => sum + Number(i.amount), 0
+      );
+      const maxAllowed = Number(inv.po.totalAmount) - otherInvoiced;
+      if (amount > maxAllowed) {
+        res.status(400).json({
+          error: `Amount exceeds remaining PO balance (₹${maxAllowed})`,
         });
         return;
       }
@@ -191,7 +188,7 @@ router.patch('/:id', requireAuth, async (req: AuthRequest, res, next) => {
       },
       include: includeAll,
     });
-    const paidAmount = await getPaidAmountForPo(inv.poId);
+    const paidAmount = await getPaidAmountForInvoice(inv.id);
     res.json({ ...updated, paidAmount, isPaid: paidAmount >= Number(updated.amount) });
   } catch (err) { next(err); }
 });

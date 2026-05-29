@@ -242,13 +242,14 @@ model VendorInvoice {
   id            String               @id @default(cuid())
   poId          String
   invoiceNumber String               @unique
-  amount        Float                // Total invoice amount (= PO amount)
+  amount        Float
   invoiceDate   DateTime
   createdAt     DateTime             @default(now())
   updatedAt     DateTime             @updatedAt
 
-  po            PurchaseOrder        @relation(fields: [poId], references: [id])
-  payments      VendorInvoicePayment[]
+  po              PurchaseOrder        @relation(fields: [poId], references: [id])
+  payments        VendorInvoicePayment[]
+  paymentRequests PaymentRequest[]     // ✅ ADD THIS LINE
 }
 
 model PaymentRequest {
@@ -257,6 +258,11 @@ model PaymentRequest {
   project      Project              @relation(fields: [projectId], references: [id])
   poId         String
   po           PurchaseOrder        @relation(fields: [poId], references: [id])
+  
+  // ✅ ADD THESE TWO LINES
+  vendorInvoiceId String?
+  vendorInvoice   VendorInvoice?   @relation(fields: [vendorInvoiceId], references: [id])
+
   amount       BigInt
   purpose      String?
   status       String @default("DRAFT")
@@ -271,6 +277,7 @@ model PaymentRequest {
 
   payment Payment?
 }
+
 
 model Payment {
   id               String         @id @default(cuid())
