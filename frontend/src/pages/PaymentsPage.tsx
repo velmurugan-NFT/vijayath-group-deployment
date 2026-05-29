@@ -307,10 +307,11 @@ export function PaymentsPage() {
         />
         <CardBody>
           {/* ── Row: Invoice selector + Amount + Submit ── */}
-          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', maxWidth: 900 }}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', width: '100%' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 200px', gap: 12, maxWidth: 760, flex: '0 1 760px' }}>
 
             {/* Invoice selector */}
-            <div className="field" style={{ marginBottom: 0, flex: 1, minWidth: 220 }}>
+            <div className="field" style={{ marginBottom: 0 }}>
               <label>Vendor Invoice *</label>
               <select value={invoiceId} onChange={(e) => handleInvoiceChange(e.target.value)}>
                 <option value="">— select invoice —</option>
@@ -346,6 +347,7 @@ export function PaymentsPage() {
                 style={{ fontWeight: 700, cursor: selectedInvoice ? 'not-allowed' : undefined }}
               />
             </div>
+            </div>
 
             <button
               type="button"
@@ -357,7 +359,7 @@ export function PaymentsPage() {
                 submitting ||
                 activePaymentInvoiceIds.has(invoiceId)
               }
-              style={{ flexShrink: 0 }}
+              style={{ whiteSpace: 'nowrap', height: 36, marginLeft: 'auto', flexShrink: 0 }}
             >
               {submitting
                 ? <><Loader2 style={{ width: 13, height: 13 }} className="animate-spin" /> Submitting…</>
