@@ -5,8 +5,8 @@ import { assertCan, blockMakerChecker, blockSelfApproval } from '../lib/rbac.js'
 import { getProjectContext, projectFilter } from '../lib/scope.js';
 import { writeAudit } from '../lib/audit.js';
 import { recalcLineItem } from '../lib/budget.js';
-import { canRoleApprove } from '../lib/approvals.js';
-import { POStatus, Role } from '../lib/constants.js';
+import { canUserApprove } from '../lib/approvals.js';
+import { POStatus } from '../lib/constants.js';
 import { N } from '../lib/money.js';
 
 const router = Router();
@@ -147,8 +147,8 @@ router.post('/:id/approve', requireAuth, async (req: AuthRequest, res, next) => 
     const poAmount = N(po.totalAmount);
     blockMakerChecker(req.user!.id, po.requesterId);
 
-    if (!canRoleApprove(req.user!.role as Role, poAmount)) {
-      res.status(403).json({ error: 'Your role cannot approve this amount' }); return;
+    if (!(await canUserApprove(req.user!, poAmount))) {
+      res.status(403).json({ error: 'Amount exceeds your approval limit' }); return;
     }
 
     // PO is still PENDING_APPROVAL here — committed does NOT yet include this PO's amount.

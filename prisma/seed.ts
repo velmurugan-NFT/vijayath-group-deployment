@@ -45,11 +45,12 @@ async function main() {
     bankName: 'HDFC Bank', accountNumber: '50200012345678', ifsc: 'HDFC0001234', isDefault: true,
   }});
 
-  const admin = await prisma.user.create({ data: { email: 'admin@vijayanth.in', password: hash, name: 'Arun', role: Role.SUPER_ADMIN } });
-  const corporate = await prisma.user.create({ data: { email: 'corporate@vijayanth.in', password: hash, name: 'Seetharam', role: Role.CORPORATE_OFFICE } });
-  const sectorHead = await prisma.user.create({ data: { email: 'solar.head@vijayanth.in', password: hash, name: 'Naveen Kumar', role: Role.SECTOR_HEAD, sectorId: solar.id } });
-  const suresh = await prisma.user.create({ data: { email: 'suresh@vijayanth.in', password: hash, name: 'Suresh K.', role: Role.PROJECT_HEAD } });
-  const kavi = await prisma.user.create({ data: { email: 'kavi@vijayanth.in', password: hash, name: 'Kavi S.', role: Role.PROJECT_HEAD } });
+  const limit10L = BigInt(1_000_000);
+  const admin = await prisma.user.create({ data: { email: 'admin@vijayanth.in', password: hash, name: 'Arun', role: Role.SUPER_ADMIN, approvalLimit: limit10L } });
+  const corporate = await prisma.user.create({ data: { email: 'corporate@vijayanth.in', password: hash, name: 'Seetharam', role: Role.CORPORATE_OFFICE, approvalLimit: limit10L } });
+  const sectorHead = await prisma.user.create({ data: { email: 'solar.head@vijayanth.in', password: hash, name: 'Naveen Kumar', role: Role.SECTOR_HEAD, sectorId: solar.id, approvalLimit: limit10L } });
+  const suresh = await prisma.user.create({ data: { email: 'suresh@vijayanth.in', password: hash, name: 'Suresh K.', role: Role.PROJECT_HEAD, approvalLimit: limit10L } });
+  const kavi = await prisma.user.create({ data: { email: 'kavi@vijayanth.in', password: hash, name: 'Kavi S.', role: Role.PROJECT_HEAD, approvalLimit: limit10L } });
 
   const parent = await prisma.project.create({ data: {
     name: 'VCPPL Usilampatti 7 MW', code: 'VCPPL-USIL-7', client: 'VCPPL', sectorId: solar.id,

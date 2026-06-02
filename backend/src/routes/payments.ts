@@ -5,8 +5,8 @@ import { assertCan, blockMakerChecker, blockSelfApproval } from '../lib/rbac.js'
 import { getProjectContext, projectFilter } from '../lib/scope.js';
 import { writeAudit } from '../lib/audit.js';
 import { recalcLineItem } from '../lib/budget.js';
-import { canRoleApprove } from '../lib/approvals.js';
-import { PaymentRequestStatus, POStatus, Role } from '../lib/constants.js';
+import { canUserApprove } from '../lib/approvals.js';
+import { PaymentRequestStatus, POStatus } from '../lib/constants.js';
 import { N } from '../lib/money.js';
 
 const router = Router();
@@ -98,8 +98,8 @@ router.post('/:id/approve', requireAuth, async (req: AuthRequest, res, next) => 
     blockSelfApproval(req.user!.id, pr.requesterId);
     const prAmount = N(pr.amount);
     blockMakerChecker(String(prAmount), req.user!.id);
-    if (!canRoleApprove(req.user!.role as Role, prAmount)) {
-      res.status(403).json({ error: 'Your role cannot approve this amount' });
+    if (!(await canUserApprove(req.user!, prAmount))) {
+      res.status(403).json({ error: 'Amount exceeds your approval limit' });
       return;
     }
 

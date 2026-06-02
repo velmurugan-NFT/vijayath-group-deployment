@@ -23,6 +23,8 @@ const STATUS_PILLS: Record<string, { cls: string; label: string }> = {
   WINNER_SELECTED: { cls: 'pill-success', label: 'Winner selected' },
   PO_CREATED:      { cls: 'pill-success', label: 'PO created' },
   CANCELLED:       { cls: 'pill-neutral', label: 'Cancelled' },
+  RECEIVED:        { cls: 'pill-success', label: 'Received' },
+  UNRECEIVED:      { cls: 'pill-warn',    label: 'Unreceived' },
 };
 
 export function StatusPill({ status, label, kind }: { status?: string; label?: string; kind?: 'success' | 'warn' | 'danger' | 'info' | 'neutral' | 'gold' }) {

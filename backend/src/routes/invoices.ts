@@ -14,9 +14,16 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const pf = await projectFilter(req.user!);
     const projectId = req.query.projectId as string | undefined;
+    const availableForReceipt = req.query.availableForReceipt === 'true';
     const invoices = await prisma.customerInvoice.findMany({
-      where: { project: projectId ? { ...pf, id: projectId } : pf },
-      include: { project: true },
+      where: {
+        project: projectId ? { ...pf, id: projectId } : pf,
+        ...(availableForReceipt && { receiptLinks: { none: {} } }),
+      },
+      include: {
+        project: true,
+        _count: { select: { receiptLinks: true } },
+      },
       orderBy: { issuedAt: 'desc' },
     });
     res.json(invoices);
@@ -45,6 +52,60 @@ router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.patch('/:id', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const existing = await prisma.customerInvoice.findUnique({
+      where: { id: req.params.id },
+      include: { project: true },
+    });
+    if (!existing) { res.status(404).json({ error: 'Invoice not found' }); return; }
+
+    const ctx = await getProjectContext(existing.projectId);
+    assertCan(req.user!, 'update', ctx ?? undefined);
+
+    const { type, amount, milestone, taxAmount } = req.body;
+    const invoice = await prisma.customerInvoice.update({
+      where: { id: req.params.id },
+      data: {
+        ...(type != null && { type }),
+        ...(amount != null && { amount }),
+        ...(milestone !== undefined && { milestone: milestone || null }),
+        ...(taxAmount != null && { taxAmount }),
+      },
+      include: { project: true },
+    });
+    await writeAudit(req.user!.id, 'INVOICE_UPDATED', 'CustomerInvoice', invoice.id, {
+      invoiceNumber: invoice.invoiceNumber,
+      amount: N(invoice.amount),
+    });
+    res.json(invoice);
+  } catch (err) { next(err); }
+});
+
+router.delete('/:id', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const existing = await prisma.customerInvoice.findUnique({
+      where: { id: req.params.id },
+      include: { receiptLinks: true },
+    });
+    if (!existing) { res.status(404).json({ error: 'Invoice not found' }); return; }
+
+    const ctx = await getProjectContext(existing.projectId);
+    assertCan(req.user!, 'delete', ctx ?? undefined);
+
+    if (existing.receiptLinks.length > 0) {
+      res.status(400).json({ error: 'Cannot delete an invoice that has a receipt linked to it' });
+      return;
+    }
+
+    await prisma.customerInvoice.delete({ where: { id: req.params.id } });
+    await writeAudit(req.user!.id, 'INVOICE_DELETED', 'CustomerInvoice', existing.id, {
+      invoiceNumber: existing.invoiceNumber,
+    });
+    res.status(204).send();
+  } catch (err) { next(err); }
+});
+
 router.get('/:id/pdf', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const invoice = await prisma.customerInvoice.findUnique({
@@ -58,7 +119,7 @@ router.get('/:id/pdf', requireAuth, async (req: AuthRequest, res, next) => {
     const font = await pdf.embedFont(StandardFonts.Helvetica);
     const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-    const fmt = (n: number) => `₹${n.toLocaleString('en-IN')}`;
+    const fmt = (n: number) => `Rs. ${n.toLocaleString('en-IN')}`;
     let y = 780;
     page.drawText('VIJAYANTH RENEWABLE ENERGY PROJECTS', { x: 50, y, size: 14, font: bold, color: rgb(0.075, 0.243, 0.133) });
     y -= 30;

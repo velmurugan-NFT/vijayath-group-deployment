@@ -6,20 +6,24 @@ import { prisma } from '../lib/prisma.js';
 import { AuthRequest, requireAuth } from '../middleware/auth.js';
 import { assertCan } from '../lib/rbac.js';
 import { Role } from '../lib/constants.js';
+import { DEFAULT_APPROVAL_LIMIT } from '../lib/approvals.js';
 
 const router = Router();
 
 router.get('/users', requireAuth, async (req: AuthRequest, res) => {
   assertCan(req.user!, 'settings:manage');
   const users = await prisma.user.findMany({
-    select: { id: true, email: true, name: true, role: true, sectorId: true, projectAssignments: true },
+    select: {
+      id: true, email: true, name: true, role: true, sectorId: true,
+      approvalLimit: true, projectAssignments: true,
+    },
   });
-  res.json(users);
+  res.json(users.map((u) => ({ ...u, approvalLimit: Number(u.approvalLimit) })));
 });
 
 router.patch('/users/:id', requireAuth, async (req: AuthRequest, res) => {
   assertCan(req.user!, 'users:create');
-  const { name, email, role, sectorId, projectIds } = req.body;
+  const { name, email, role, sectorId, projectIds, approvalLimit } = req.body;
   await prisma.projectAssignment.deleteMany({ where: { userId: req.params.id } });
   const user = await prisma.user.update({
     where: { id: req.params.id },
@@ -28,27 +32,29 @@ router.patch('/users/:id', requireAuth, async (req: AuthRequest, res) => {
       ...(email && { email }),
       ...(role && { role: role as Role }),
       ...(sectorId !== undefined && { sectorId }),
+      ...(approvalLimit !== undefined && { approvalLimit: BigInt(approvalLimit) }),
       ...(projectIds?.length && {
         projectAssignments: { create: projectIds.map((pid: string) => ({ projectId: pid })) },
       }),
     },
   });
-  res.json(user);
+  res.json({ ...user, approvalLimit: Number(user.approvalLimit) });
 });
 
 router.post('/users', requireAuth, async (req: AuthRequest, res) => {
   assertCan(req.user!, 'users:create');
-  const { email, name, role, password, sectorId, projectIds } = req.body;
+  const { email, name, role, password, sectorId, projectIds, approvalLimit } = req.body;
   const hash = await bcrypt.hash(password ?? 'demo123', 10);
   const user = await prisma.user.create({
     data: {
       email, name, role: role as Role, password: hash, sectorId,
+      approvalLimit: BigInt(approvalLimit ?? DEFAULT_APPROVAL_LIMIT),
       projectAssignments: projectIds?.length
         ? { create: projectIds.map((pid: string) => ({ projectId: pid })) }
         : undefined,
     },
   });
-  res.status(201).json(user);
+  res.status(201).json({ ...user, approvalLimit: Number(user.approvalLimit) });
 });
 
 router.get('/sectors', requireAuth, async (req: AuthRequest, res) => {

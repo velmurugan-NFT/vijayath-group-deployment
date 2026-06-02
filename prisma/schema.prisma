@@ -13,7 +13,7 @@ model User {
   name      String
   role      String
 
-  approvalLimit BigInt @default(0)
+  approvalLimit BigInt @default(1000000)
 
   sectorId  String?
   sector    Sector?  @relation(fields: [sectorId], references: [id])
@@ -124,6 +124,7 @@ model WBSLineItem {
 
   poLineItems       POLineItem[]
   quotationRequests QuotationRequest[]
+  documents         Document[]
 }
 
 model Task {
@@ -301,29 +302,46 @@ model CustomerInvoice {
   milestone     String?
   issuedAt      DateTime      @default(now())
   createdAt     DateTime      @default(now())
+  receiptLinks  CustomerReceiptInvoice[]
 }
 
 model CustomerReceipt {
-  id          String   @id @default(cuid())
-  projectId   String
-  project     Project  @relation(fields: [projectId], references: [id])
-  amount      BigInt
-  receivedAt  DateTime
-  reference   String?
-  createdAt   DateTime @default(now())
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id])
+  amount       BigInt
+  receivedAt   DateTime
+  reference    String?
+  mode         String?
+  createdAt    DateTime @default(now())
+  invoiceLinks CustomerReceiptInvoice[]
+}
+
+model CustomerReceiptInvoice {
+  receiptId String
+  receipt   CustomerReceipt @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  invoiceId String
+  invoice   CustomerInvoice @relation(fields: [invoiceId], references: [id])
+
+  @@id([receiptId, invoiceId])
 }
 
 model Document {
-  id         String   @id @default(cuid())
-  projectId  String
-  project    Project  @relation(fields: [projectId], references: [id])
-  filename   String
-  filepath   String
-  category   String?
-  version    Int      @default(1)
-  uploadedById String
-  uploadedBy User     @relation(fields: [uploadedById], references: [id])
-  createdAt  DateTime @default(now())
+  id            String       @id @default(cuid())
+  projectId     String
+  project       Project      @relation(fields: [projectId], references: [id])
+  wbsLineItemId String?
+  wbsLineItem   WBSLineItem? @relation(fields: [wbsLineItemId], references: [id])
+  filename      String
+  filepath      String
+  category      String?
+  documentDate  DateTime?
+  notes         String?
+  uploadBatchId String?
+  version       Int          @default(1)
+  uploadedById  String
+  uploadedBy    User         @relation(fields: [uploadedById], references: [id])
+  createdAt     DateTime     @default(now())
 }
 
 model AuditLog {

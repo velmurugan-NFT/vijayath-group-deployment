@@ -57,7 +57,10 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
     const pf = await projectFilter(req.user!);
     const receipts = await prisma.customerReceipt.findMany({
       where: { project: pf },
-      include: { project: true },
+      include: {
+        project: true,
+        invoiceLinks: { include: { invoice: { select: { id: true, invoiceNumber: true } } } },
+      },
       orderBy: { receivedAt: 'desc' },
     });
     res.json(receipts);
@@ -66,14 +69,59 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
 
 router.post('/', requireAuth, async (req: AuthRequest, res, next) => {
   try {
-    const { projectId, amount, receivedAt, reference } = req.body;
+    const { projectId, amount, receivedAt, reference, mode, invoiceId, invoiceIds } = req.body as {
+      projectId: string;
+      amount: number;
+      receivedAt: string;
+      reference?: string;
+      mode?: string;
+      invoiceId?: string;
+      invoiceIds?: string[];
+    };
     const ctx = await getProjectContext(projectId);
     assertCan(req.user!, 'create', ctx ?? undefined);
-    const receipt = await prisma.customerReceipt.create({
-      data: { projectId, amount, receivedAt: new Date(receivedAt), reference },
-      include: { project: true },
+
+    const linkedInvoiceId = invoiceId ?? (Array.isArray(invoiceIds) ? invoiceIds[0] : undefined);
+    if (!linkedInvoiceId) {
+      res.status(400).json({ error: 'Select an invoice' });
+      return;
+    }
+
+    const invoice = await prisma.customerInvoice.findFirst({
+      where: { id: linkedInvoiceId, projectId },
+      include: { receiptLinks: { select: { receiptId: true } } },
     });
-    await writeAudit(req.user!.id, 'RECEIPT_RECORDED', 'CustomerReceipt', receipt.id, { amount, projectId });
+    if (!invoice) {
+      res.status(400).json({ error: 'Invoice does not belong to this project' });
+      return;
+    }
+    if (invoice.receiptLinks.length > 0) {
+      res.status(400).json({ error: 'This invoice already has a receipt recorded' });
+      return;
+    }
+    const invoiceAmount = N(invoice.amount);
+    if (N(amount) !== invoiceAmount) {
+      res.status(400).json({ error: 'Amount must match the selected invoice amount' });
+      return;
+    }
+
+    const receipt = await prisma.customerReceipt.create({
+      data: {
+        projectId,
+        amount,
+        receivedAt: new Date(receivedAt),
+        reference,
+        mode: mode?.trim() || null,
+        invoiceLinks: { create: [{ invoiceId: linkedInvoiceId }] },
+      },
+      include: {
+        project: true,
+        invoiceLinks: { include: { invoice: { select: { id: true, invoiceNumber: true } } } },
+      },
+    });
+    await writeAudit(req.user!.id, 'RECEIPT_RECORDED', 'CustomerReceipt', receipt.id, {
+      amount, projectId, invoiceId: linkedInvoiceId,
+    });
     res.status(201).json(receipt);
   } catch (err) { next(err); }
 });

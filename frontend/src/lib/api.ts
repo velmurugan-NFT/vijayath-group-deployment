@@ -137,7 +137,8 @@ export async function apiDownload(
 
 export async function apiUpload(
   path: string,
-  formData: FormData
+  formData: FormData,
+  method: 'POST' | 'PATCH' = 'POST',
 ): Promise<unknown> {
 
   loadingStore.setLoading(true);
@@ -148,7 +149,7 @@ export async function apiUpload(
       await fetch(
         `${BASE}${path}`,
         {
-          method: 'POST',
+          method,
 
           credentials:
             'include',

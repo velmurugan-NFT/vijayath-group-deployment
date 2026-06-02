@@ -44,6 +44,7 @@ router.post('/login', async (req, res) => {
     name: user.name,
     role: user.role,
     sectorId: user.sectorId,
+    approvalLimit: Number(user.approvalLimit),
     projectIds: user.projectAssignments.map(
       (a) => a.projectId
     ),
@@ -59,7 +60,8 @@ router.get('/me', requireAuth, (req: AuthRequest, res) => {
   const u = req.user!;
   res.json({
     id: u.id, email: (u as any).email, name: (u as any).name, role: u.role,
-    sectorId: u.sectorId, projectIds: (u as any).projectIds,
+    sectorId: u.sectorId, approvalLimit: Number((u as any).approvalLimit ?? 0),
+    projectIds: (u as any).projectIds,
   });
 });
 
@@ -82,7 +84,8 @@ router.post('/demo-switch', requireAuth, async (req: AuthRequest, res) => {
   req.session.save(() => {
     res.json({
       id: target.id, email: target.email, name: target.name, role: target.role,
-      sectorId: target.sectorId, projectIds: target.projectAssignments.map((a) => a.projectId),
+      sectorId: target.sectorId, approvalLimit: Number(target.approvalLimit),
+      projectIds: target.projectAssignments.map((a) => a.projectId),
     });
   });
 });

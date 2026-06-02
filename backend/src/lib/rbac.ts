@@ -21,6 +21,8 @@ export interface UserWithScope {
   id: string;
   role: Role;
   sectorId?: string | null;
+  projectIds?: string[];
+  approvalLimit?: bigint | null;
 }
 
 export function can(
@@ -75,11 +77,13 @@ export function can(
   // PROJECT HEAD
   if (user.role === 'PROJECT_HEAD') {
 
-    if (
-      action === 'read' ||
-      action === 'update'
-    ) {
+    if (action === 'read' || action === 'update') {
       return true;
+    }
+
+    if (action === 'approve') {
+      if (!resource?.projectId) return false;
+      return user.projectIds?.includes(resource.projectId) ?? false;
     }
 
     return false;

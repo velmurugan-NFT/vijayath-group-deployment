@@ -1,64 +1,647 @@
-import { useEffect, useState } from 'react';
-import { api, apiUpload } from '@/lib/api';
+import { useEffect, useRef, useState } from 'react';
+import { api, apiDownload, apiUpload } from '@/lib/api';
 import { formatDate } from '@/lib/formatDate';
 import { toast } from 'sonner';
 import { PageHeader } from '@/components/PageHeader';
 import { Card } from '@/components/design/Card';
-import { useProjectIdFromUrl } from '@/context/ProjectContext';
+import { Button } from '@/components/ui/button';
+import { useProjectContext } from '@/context/ProjectContext';
+import { FileDown, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
+
+const DOCUMENT_TYPES = [
+  'Contract',
+  'Drawing',
+  'Specification',
+  'Technical Report',
+  'Certificate',
+  'Invoice',
+  'Photo',
+  'Correspondence',
+  'Permit / Approval',
+  'Other',
+] as const;
+
+type WbsLineItem = { id: string; description: string };
+type WbsCategory = { id: string; name: string; lineItems: WbsLineItem[] };
+
+type DocumentRow = {
+  id: string;
+  filename: string;
+  category: string | null;
+  documentDate: string | null;
+  notes: string | null;
+  uploadBatchId: string | null;
+  createdAt: string;
+  project: { id: string; name: string };
+  wbsLineItem?: {
+    id: string;
+    description: string;
+    category?: { name: string };
+  } | null;
+};
+
+type DocGroup = {
+  key: string;
+  batchId: string | null;
+  docs: DocumentRow[];
+};
+
+type DocumentForm = {
+  projectId: string;
+  wbsLineItemId: string;
+  category: string;
+  documentDate: string;
+  notes: string;
+  files: File[];
+};
+
+const emptyForm = (): DocumentForm => ({
+  projectId: '',
+  wbsLineItemId: '',
+  category: '',
+  documentDate: '',
+  notes: '',
+  files: [],
+});
+
+function wbsLabel(item: DocumentRow['wbsLineItem']): string {
+  if (!item) return '—';
+  const cat = item.category?.name;
+  return cat ? `${cat} — ${item.description}` : item.description;
+}
+
+function groupDocuments(docs: DocumentRow[]): DocGroup[] {
+  const map = new Map<string, DocumentRow[]>();
+  for (const d of docs) {
+    const key = d.uploadBatchId ?? d.id;
+    const list = map.get(key) ?? [];
+    list.push(d);
+    map.set(key, list);
+  }
+  return Array.from(map.entries())
+    .map(([key, groupDocs]) => ({
+      key,
+      batchId: groupDocs[0]?.uploadBatchId ?? null,
+      docs: [...groupDocs].sort((a, b) => a.filename.localeCompare(b.filename)),
+    }))
+    .sort((a, b) => new Date(b.docs[0].createdAt).getTime() - new Date(a.docs[0].createdAt).getTime());
+}
+
+function DeleteDocumentModal({
+  group,
+  onConfirm,
+  onCancel,
+  deleting,
+}: {
+  group: DocGroup | null;
+  onConfirm: () => void;
+  onCancel: () => void;
+  deleting: boolean;
+}) {
+  if (!group) return null;
+  const primary = group.docs[0];
+  const fileList = group.docs.map((d) => d.filename).join(', ');
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(2px)',
+    }}>
+      <div style={{
+        background: 'var(--surface)', borderRadius: 12,
+        padding: '1.75rem 2rem', maxWidth: 420, width: '90%',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+        border: '1px solid var(--line)',
+      }}>
+        <div style={{
+          width: 44, height: 44, borderRadius: '50%',
+          background: '#fee2e2', display: 'flex',
+          alignItems: 'center', justifyContent: 'center', marginBottom: 14,
+        }}>
+          <Trash2 size={20} color="#ef4444" />
+        </div>
+        <div style={{ fontWeight: 700, fontSize: '1rem', marginBottom: 6, color: 'var(--ink)' }}>
+          Delete {group.docs.length > 1 ? `${group.docs.length} documents` : 'document'}?
+        </div>
+        <div style={{ fontSize: '0.875rem', color: 'var(--muted)', marginBottom: 20, lineHeight: 1.5 }}>
+          You are about to permanently delete{' '}
+          <strong style={{ color: 'var(--ink)' }}>{fileList}</strong>
+          {primary.project ? <> from <strong>{primary.project.name}</strong></> : ''}.
+          This action cannot be undone.
+        </div>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={deleting}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={deleting}
+            onClick={onConfirm}
+            style={{
+              background: '#ef4444', color: '#fff', border: 'none',
+              borderRadius: 7, padding: '7px 18px', fontWeight: 600,
+              fontSize: '0.875rem', cursor: deleting ? 'not-allowed' : 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}
+          >
+            {deleting
+              ? <><Loader2 style={{ width: 14, height: 14 }} className="animate-spin" /> Deleting…</>
+              : 'Yes, delete it'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DocumentModal({
+  open,
+  mode,
+  initial,
+  topLevelProjects,
+  subProjects,
+  saving,
+  onSave,
+  onCancel,
+}: {
+  open: boolean;
+  mode: 'create' | 'edit';
+  initial: DocumentForm;
+  topLevelProjects: { id: string; name: string }[];
+  subProjects: { id: string; name: string }[];
+  saving: boolean;
+  onSave: (form: DocumentForm) => void;
+  onCancel: () => void;
+}) {
+  const [form, setForm] = useState<DocumentForm>(initial);
+  const [wbs, setWbs] = useState<WbsCategory[]>([]);
+  const [wbsLoading, setWbsLoading] = useState(false);
+
+  useEffect(() => {
+    if (open) setForm(initial);
+  }, [open, initial]);
+
+  useEffect(() => {
+    if (!open || !form.projectId) {
+      setWbs([]);
+      return;
+    }
+    setWbsLoading(true);
+    api<WbsCategory[]>(`/projects/${form.projectId}/wbs`)
+      .then(setWbs)
+      .catch(() => setWbs([]))
+      .finally(() => setWbsLoading(false));
+  }, [open, form.projectId]);
+
+  const allLineItems = wbs.flatMap((c) =>
+    c.lineItems.map((l) => ({ ...l, catName: c.name })),
+  );
+
+  const isValid =
+    !!form.projectId &&
+    (mode === 'edit' || form.files.length > 0);
+
+  if (!open) return null;
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(2px)',
+      padding: '1rem',
+    }}>
+      <div style={{
+        background: 'var(--surface)', borderRadius: 12,
+        padding: '1.75rem 2rem', maxWidth: 520, width: '100%',
+        maxHeight: '90vh', overflowY: 'auto',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+        border: '1px solid var(--line)',
+      }}>
+        <div style={{ fontWeight: 700, fontSize: '1.05rem', marginBottom: 18, color: 'var(--vijayanth-green-deep, #134d22)' }}>
+          {mode === 'create' ? 'Add document' : 'Edit document'}
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 22 }}>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Project *</label>
+            <select
+              value={form.projectId}
+              onChange={(e) => setForm({ ...emptyForm(), projectId: e.target.value, documentDate: form.documentDate })}
+            >
+              <option value="">Select project</option>
+              {topLevelProjects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+              {subProjects.length > 0 && (
+                <optgroup label="Sub-projects">
+                  {subProjects.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          </div>
+
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>WBS item</label>
+            <select
+              value={form.wbsLineItemId}
+              disabled={!form.projectId || wbsLoading}
+              onChange={(e) => setForm({ ...form, wbsLineItemId: e.target.value })}
+            >
+              <option value="">
+                {!form.projectId
+                  ? 'Select a project first'
+                  : wbsLoading
+                    ? 'Loading WBS items…'
+                    : allLineItems.length === 0
+                      ? 'No WBS items (optional)'
+                      : 'None'}
+              </option>
+              {wbs.map((cat) => (
+                <optgroup key={cat.id} label={cat.name}>
+                  {cat.lineItems.map((li) => (
+                    <option key={li.id} value={li.id}>{li.description}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Document type</label>
+            <select
+              value={form.category}
+              onChange={(e) => setForm({ ...form, category: e.target.value })}
+            >
+              <option value="">None</option>
+              {DOCUMENT_TYPES.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Date</label>
+            <input
+              type="date"
+              value={form.documentDate}
+              onChange={(e) => setForm({ ...form, documentDate: e.target.value })}
+            />
+          </div>
+
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Notes</label>
+            <textarea
+              rows={3}
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              placeholder="Optional description or context for this document…"
+            />
+          </div>
+
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>{mode === 'create' ? 'Files *' : 'Replace file (optional)'}</label>
+            <input
+              type="file"
+              className="text-sm"
+              multiple={mode === 'create'}
+              onChange={(e) => {
+                const selected = e.target.files ? Array.from(e.target.files) : [];
+                setForm({ ...form, files: mode === 'edit' ? selected.slice(0, 1) : selected });
+              }}
+            />
+            {mode === 'create' && form.files.length > 0 && (
+              <ul style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: 6, paddingLeft: 16 }}>
+                {form.files.map((f) => (
+                  <li key={`${f.name}-${f.size}`}>{f.name}</li>
+                ))}
+              </ul>
+            )}
+            {mode === 'edit' && form.files.length === 0 && (
+              <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>
+                Leave empty to keep the current file
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={saving}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={saving || !isValid}
+            onClick={() => onSave(form)}
+          >
+            {saving
+              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving…</>
+              : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function DocumentsPage() {
-  const urlProjectId = useProjectIdFromUrl();
-  const [docs, setDocs] = useState<Record<string, unknown>[]>([]);
-  const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
-  const [projectId, setProjectId] = useState(urlProjectId ?? '');
+  const { activeProject, projects, loading: projectsLoading } = useProjectContext();
+  const [docs, setDocs] = useState<DocumentRow[]>([]);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
+  const [editGroup, setEditGroup] = useState<DocGroup | null>(null);
+  const [formInitial, setFormInitial] = useState<DocumentForm>(emptyForm());
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const [deleteGroup, setDeleteGroup] = useState<DocGroup | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
-  const loadDocs = (pid?: string) => {
-    const q = pid || projectId ? `?projectId=${pid || projectId}` : '';
-    api<Record<string, unknown>[]>(`/documents${q}`).then(setDocs);
+  const filteredProjects = activeProject
+    ? projects.filter(
+        (p) => p.id === activeProject.id || p.parentId === activeProject.id,
+      )
+    : projects;
+
+  const projectIds = new Set(filteredProjects.map((p) => p.id));
+  const topLevelProjects = filteredProjects.filter(
+    (p) => !p.parentId || !projectIds.has(p.parentId ?? ''),
+  );
+  const subProjects = filteredProjects.filter(
+    (p) => p.parentId && projectIds.has(p.parentId),
+  );
+
+  const scopedProjectIds = activeProject
+    ? new Set([
+        activeProject.id,
+        ...projects.filter((p) => p.parentId === activeProject.id).map((p) => p.id),
+      ])
+    : null;
+
+  const filteredDocs = scopedProjectIds
+    ? docs.filter((d) => scopedProjectIds.has(d.project?.id ?? ''))
+    : docs;
+
+  const docGroups = groupDocuments(filteredDocs);
+
+  const loadDocs = () => {
+    api<DocumentRow[]>('/documents').then(setDocs).catch(() => {});
   };
 
   useEffect(() => {
-    api('/projects').then((p: { id: string; name: string; parentId: string | null }[]) => {
-      const subs = p.filter((x) => x.parentId);
-      setProjects(subs);
-      const id = urlProjectId ?? subs[0]?.id ?? '';
-      setProjectId(id);
-      if (id) loadDocs(id);
-      else api<Record<string, unknown>[]>('/documents').then(setDocs);
+    loadDocs();
+  }, []);
+
+  const openCreate = () => {
+    const preferredId =
+      activeProject && filteredProjects.some((p) => p.id === activeProject.id)
+        ? activeProject.id
+        : topLevelProjects[0]?.id ?? filteredProjects[0]?.id ?? '';
+    setModalMode('create');
+    setEditGroup(null);
+    setFormInitial({ ...emptyForm(), projectId: preferredId });
+    setModalOpen(true);
+  };
+
+  const openEdit = (group: DocGroup) => {
+    const doc = group.docs[0];
+    setModalMode('edit');
+    setEditGroup(group);
+    setFormInitial({
+      projectId: doc.project.id,
+      wbsLineItemId: doc.wbsLineItem?.id ?? '',
+      category: doc.category ?? '',
+      documentDate: doc.documentDate
+        ? new Date(doc.documentDate).toISOString().slice(0, 10)
+        : '',
+      notes: doc.notes ?? '',
+      files: [],
     });
-  }, [urlProjectId]);
+    setModalOpen(true);
+  };
 
-  useEffect(() => { if (projectId) loadDocs(projectId); }, [projectId]);
-
-  const upload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !projectId) return;
+  const buildFormData = (form: DocumentForm, forEdit: boolean) => {
     const fd = new FormData();
-    fd.append('file', file);
-    fd.append('projectId', projectId);
-    fd.append('category', 'General');
-    await apiUpload('/documents', fd);
-    toast.success('Document uploaded');
-    api<Record<string, unknown>[]>('/documents').then(setDocs);
+    fd.append('projectId', form.projectId);
+    if (form.wbsLineItemId) fd.append('wbsLineItemId', form.wbsLineItemId);
+    if (form.category) fd.append('category', form.category);
+    if (form.documentDate) fd.append('documentDate', form.documentDate);
+    if (form.notes.trim()) fd.append('notes', form.notes.trim());
+    if (forEdit && form.files[0]) {
+      fd.append('file', form.files[0]);
+    } else {
+      form.files.forEach((f) => fd.append('files', f));
+    }
+    return fd;
+  };
+
+  const handleSave = async (form: DocumentForm) => {
+    if (savingRef.current) return;
+    if (!form.projectId) { toast.error('Select a project'); return; }
+    if (modalMode === 'create' && form.files.length === 0) {
+      toast.error('Select at least one file to upload');
+      return;
+    }
+
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      if (modalMode === 'create') {
+        const fd = buildFormData(form, false);
+        const created = await apiUpload('/documents', fd) as DocumentRow[];
+        const count = Array.isArray(created) ? created.length : 1;
+        toast.success(count === 1 ? 'Document uploaded' : `${count} files uploaded as one entry`);
+      } else if (editGroup) {
+        const payload = {
+          projectId: form.projectId,
+          ...(form.wbsLineItemId ? { wbsLineItemId: form.wbsLineItemId } : {}),
+          ...(form.category ? { category: form.category } : { category: '' }),
+          ...(form.documentDate ? { documentDate: form.documentDate } : {}),
+          ...(form.notes.trim() ? { notes: form.notes.trim() } : { notes: '' }),
+        };
+        if (editGroup.batchId) {
+          await api(`/documents/batches/${editGroup.batchId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(payload),
+          });
+        } else {
+          const fd = buildFormData(form, true);
+          await apiUpload(`/documents/${editGroup.docs[0].id}`, fd, 'PATCH');
+        }
+        toast.success('Document updated');
+      }
+      setModalOpen(false);
+      setEditGroup(null);
+      loadDocs();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to save document');
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
+
+  const downloadGroup = async (group: DocGroup) => {
+    try {
+      for (const doc of group.docs) {
+        await apiDownload(`/documents/${doc.id}/download`, doc.filename);
+      }
+      if (group.docs.length > 1) {
+        toast.success(`Downloaded ${group.docs.length} files`);
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to download file');
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteGroup) return;
+    setDeleting(true);
+    try {
+      if (deleteGroup.batchId) {
+        await api(`/documents/batches/${deleteGroup.batchId}`, { method: 'DELETE' });
+      } else {
+        await api(`/documents/${deleteGroup.docs[0].id}`, { method: 'DELETE' });
+      }
+      toast.success('Document deleted');
+      setDeleteGroup(null);
+      loadDocs();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to delete document');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
     <div>
-      <PageHeader title="Documents" subtitle="Project document repository" />
-      <div className="card card-pad mb-4 flex gap-4 items-center">
-        <select className="border rounded px-3 py-2" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        <input type="file" onChange={upload} className="text-sm" />
-      </div>
-      <Card><table className="tbl">
-        <thead><tr><th className="p-2 text-left">File</th><th className="p-2">Project</th><th className="p-2">Uploaded</th><th></th></tr></thead>
-        <tbody>{docs.map((d) => (
-          <tr key={String(d.id)}><td className="p-2">{String(d.filename)}</td><td className="p-2">{(d.project as { name: string })?.name}</td>
-            <td className="p-2">{formatDate(d.createdAt as string)}</td>
-            <td className="p-2"><a href={`/api/documents/${d.id}/download`} className="underline text-vijayanth-green">Download</a></td></tr>
-        ))}</tbody>
-      </table></Card>
+      <DeleteDocumentModal
+        group={deleteGroup}
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleteGroup(null)}
+        deleting={deleting}
+      />
+
+      <DocumentModal
+        open={modalOpen}
+        mode={modalMode}
+        initial={formInitial}
+        topLevelProjects={topLevelProjects}
+        subProjects={subProjects}
+        saving={saving}
+        onSave={handleSave}
+        onCancel={() => { setModalOpen(false); setEditGroup(null); }}
+      />
+
+      <PageHeader
+        title="Documents"
+        subtitle="Project document repository"
+        actions={
+          <Button onClick={openCreate} disabled={projectsLoading || filteredProjects.length === 0}>
+            <Plus className="w-4 h-4" />
+            Add Document
+          </Button>
+        }
+      />
+
+      <Card className="overflow-x-auto">
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>Project</th>
+              <th>WBS item</th>
+              <th>Type</th>
+              <th>Date</th>
+              <th>Notes</th>
+              <th>File</th>
+              <th>Uploaded</th>
+              <th style={{ textAlign: 'center' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {docGroups.map((group) => {
+              const d = group.docs[0];
+              return (
+              <tr key={group.key}>
+                <td className="name-cell">{d.project.name}</td>
+                <td>{wbsLabel(d.wbsLineItem)}</td>
+                <td>{d.category ?? '—'}</td>
+                <td>{d.documentDate ? formatDate(d.documentDate) : '—'}</td>
+                <td style={{ maxWidth: 200 }}>
+                  <span
+                    title={d.notes ?? ''}
+                    style={{
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {d.notes ?? '—'}
+                  </span>
+                </td>
+                <td>
+                  <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                    {group.docs.map((file) => (
+                      <li key={file.id} className="mono text-[11px]" style={{ marginBottom: 2 }}>
+                        {file.filename}
+                      </li>
+                    ))}
+                  </ul>
+                </td>
+                <td>{formatDate(d.createdAt)}</td>
+                <td style={{ textAlign: 'center' }}>
+                  <div style={{ display: 'inline-flex', flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      title="Edit document"
+                      style={{ padding: '0 8px', color: 'var(--muted)' }}
+                      onClick={() => openEdit(group)}
+                    >
+                      <Pencil style={{ width: 13, height: 13 }} />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      title={group.docs.length > 1 ? `Download ${group.docs.length} files` : 'Download'}
+                      style={{
+                        background: 'none', border: '1px solid var(--line)',
+                        color: 'var(--vijayanth-green, #134d22)', fontWeight: 600,
+                        display: 'flex', alignItems: 'center', gap: 4,
+                      }}
+                      onClick={() => downloadGroup(group)}
+                    >
+                      <FileDown style={{ width: 13, height: 13 }} />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      title="Delete document"
+                      style={{
+                        background: 'none', border: '1px solid #fca5a5',
+                        color: '#ef4444', fontWeight: 600,
+                        display: 'flex', alignItems: 'center', gap: 4,
+                      }}
+                      onClick={() => setDeleteGroup(group)}
+                    >
+                      <Trash2 style={{ width: 13, height: 13 }} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );})}
+            {docGroups.length === 0 && (
+              <tr>
+                <td colSpan={8} style={{ textAlign: 'center', color: 'var(--muted)', padding: '1.5rem' }}>
+                  No documents found
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { ROLE_LABELS } from '@/lib/roleUtils';
+import { formatINR } from '@/lib/formatINR';
 import { PageHeader } from '@/components/PageHeader';
 import { Card, CardHeader, CardBody } from '@/components/design/Card';
 import { FormDialog } from '@/components/FormDialog';
@@ -8,16 +9,21 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { Plus } from 'lucide-react';
 
+const DEFAULT_APPROVAL_LIMIT = 1_000_000; // 10 lakh
+
 const NAV = ['Users', 'Sectors', 'Templates', 'Approval thresholds', 'Bank accounts', 'System config', 'Reset demo data'];
 
 export function SettingsPage() {
-  const [section, setSection] = useState(3);
+  const [section, setSection] = useState(0);
   const [users, setUsers] = useState<Record<string, unknown>[]>([]);
   const [sectors, setSectors] = useState<Record<string, unknown>[]>([]);
   const [thresholds, setThresholds] = useState<Record<string, unknown>[]>([]);
   const [templates, setTemplates] = useState<Record<string, unknown>[]>([]);
   const [userOpen, setUserOpen] = useState(false);
-  const [userForm, setUserForm] = useState({ email: '', name: '', role: 'PROJECT_HEAD', password: 'demo123' });
+  const [userForm, setUserForm] = useState({
+    email: '', name: '', role: 'PROJECT_HEAD', password: 'demo123',
+    approvalLimit: DEFAULT_APPROVAL_LIMIT,
+  });
 
   const load = () => {
     api<Record<string, unknown>[]>('/settings/users').then(setUsers);
@@ -38,6 +44,12 @@ export function SettingsPage() {
     await api('/settings/users', { method: 'POST', body: JSON.stringify(userForm) });
     toast.success('User created');
     setUserOpen(false);
+    load();
+  };
+
+  const saveUserApprovalLimit = async (userId: string, approvalLimit: number) => {
+    await api(`/settings/users/${userId}`, { method: 'PATCH', body: JSON.stringify({ approvalLimit }) });
+    toast.success('Approval limit updated');
     load();
   };
 
@@ -71,12 +83,25 @@ export function SettingsPage() {
         <Card>
           {section === 0 && (
             <>
-              <CardHeader title="Users" actions={<button type="button" className="btn btn-primary btn-sm" onClick={() => setUserOpen(true)}><Plus className="w-3 h-3" /> Add user</button>} />
+              <CardHeader title="Users" subtitle="Per-user approval limit (default ₹10 lakh)" actions={<button type="button" className="btn btn-primary btn-sm" onClick={() => setUserOpen(true)}><Plus className="w-3 h-3" /> Add user</button>} />
               <CardBody className="p-0">
                 <table className="tbl">
-                  <thead><tr><th>Name</th><th>Email</th><th>Role</th></tr></thead>
+                  <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Approval limit</th></tr></thead>
                   <tbody>{users.map((u) => (
-                    <tr key={String(u.id)}><td className="name-cell">{String(u.name)}</td><td>{String(u.email)}</td><td>{ROLE_LABELS[String(u.role)] ?? String(u.role)}</td></tr>
+                    <tr key={String(u.id)}>
+                      <td className="name-cell">{String(u.name)}</td>
+                      <td>{String(u.email)}</td>
+                      <td>{ROLE_LABELS[String(u.role)] ?? String(u.role)}</td>
+                      <td>
+                        <input
+                          type="number"
+                          className="h-8 w-36 border border-vijayanth-line rounded-md px-2 text-sm"
+                          defaultValue={Number(u.approvalLimit ?? DEFAULT_APPROVAL_LIMIT)}
+                          onBlur={(e) => saveUserApprovalLimit(String(u.id), Number(e.target.value))}
+                        />
+                        <span className="text-xs text-vijayanth-muted ml-2">{formatINR(Number(u.approvalLimit ?? DEFAULT_APPROVAL_LIMIT))}</span>
+                      </td>
+                    </tr>
                   ))}</tbody>
                 </table>
               </CardBody>
@@ -96,9 +121,9 @@ export function SettingsPage() {
           )}
           {section === 3 && (
             <>
-              <CardHeader title="Approval thresholds" subtitle="Cascading ceilings · FR-1.6" />
+              <CardHeader title="Approval thresholds" subtitle="Role-tier fallback when user limit is unset" />
               <CardBody>
-                <p className="text-vijayanth-muted text-sm mb-4">Corporate Office configures sanction ceilings for each role tier. Amounts above the highest tier route automatically.</p>
+                <p className="text-vijayanth-muted text-sm mb-4">Each user has a personal approval limit (default ₹10 lakh). Role thresholds apply only when a user&apos;s limit is zero.</p>
                 <div className="space-y-3">
                   {thresholds.map((t) => (
                     <div key={String(t.role)} className="flex items-center gap-4 p-3 bg-vijayanth-surface-2 rounded-lg border border-vijayanth-line">
@@ -107,7 +132,7 @@ export function SettingsPage() {
                     </div>
                   ))}
                 </div>
-                <div className="note mt-4"><strong>Maker-checker enforced:</strong> monetary actions above Project Head ceiling require a different approver.</div>
+                <div className="note mt-4"><strong>Maker-checker enforced:</strong> approvers cannot approve their own requests.</div>
               </CardBody>
             </>
           )}
@@ -130,6 +155,15 @@ export function SettingsPage() {
           <select value={userForm.role} onChange={(e) => setUserForm({ ...userForm, role: e.target.value })}>
             {Object.keys(ROLE_LABELS).map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
           </select>
+        </div>
+        <div className="field">
+          <label>Approval limit (₹)</label>
+          <input
+            type="number"
+            value={userForm.approvalLimit}
+            onChange={(e) => setUserForm({ ...userForm, approvalLimit: Number(e.target.value) })}
+          />
+          <p className="text-xs text-vijayanth-muted mt-1">Default: ₹10,00,000 (10 lakh)</p>
         </div>
         <div className="field"><label>Password</label><input value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })} /></div>
       </FormDialog>
