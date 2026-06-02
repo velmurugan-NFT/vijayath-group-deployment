@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { useParams, Link, useSearchParams, useNavigate } from 'react-router-dom';
-import { api, apiUpload } from '@/lib/api';
+import { api, apiDownload } from '@/lib/api';
+import { groupDocuments, type DocumentRow } from '@/lib/documentGroups';
+import { DocumentsTable } from '@/components/DocumentsTable';
 import { formatINR } from '@/lib/formatINR';
 import { formatDate } from '@/lib/formatDate';
 import { PageHeader } from '@/components/PageHeader';
@@ -127,34 +129,78 @@ export function ProjectDetailPage() {
       )}
       {tab === 'pos' && <TabTable title="Purchase orders" link={`/quotations${q}`} headers={['PO #', 'Vendor', 'Amount', 'Status']} colWidths={['20%', '35%', '25%', '20%']} rows={(pos as PoRow[]).map((p) => [<Link key={p.id} to={`/pos/${p.id}`} className="underline">{p.poNumber}</Link>, p.vendor?.name ?? '—', formatINR(p.totalAmount), <StatusPill key={p.id} status={p.status} />])} />}
       {tab === 'payments' && <TabTable title="Payments" link={`/payments${q}`} headers={['PO', 'Amount', 'Date', 'Status']} colWidths={[undefined, '160px', '130px', '110px']} rows={(payments as PayRow[]).map((p) => [p.po?.poNumber, formatINR(p.amount), formatDate(p.payment?.paidAt), <StatusPill key={p.id} status={p.status} />])} />}
-      {tab === 'invoices' && <TabTable title="Customer invoices" link={`/invoices${q}`} headers={['#', 'Amount', 'Date']} colWidths={[undefined, '180px', '130px']} rows={(invoices as InvRow[]).map((i) => [i.invoiceNumber, formatINR(i.amount), formatDate(i.issuedAt)])} />}
+      {tab === 'invoices' && (
+        <TabTable
+          title="Customer invoices"
+          link={`/invoices${q}`}
+          headers={['#', 'Amount', 'Date', 'Status']}
+          colWidths={[undefined, '180px', '130px', '110px']}
+          rows={(invoices as InvRow[]).map((i) => [
+            i.invoiceNumber,
+            formatINR(i.amount),
+            formatDate(i.issuedAt),
+            <StatusPill key={i.id} status={isInvoicePaid(i) ? 'PAID' : 'UNPAID'} />,
+          ])}
+        />
+      )}
       {tab === 'documents' && (
         <Card>
-          <CardHeader title="Documents" />
-          <CardBody>
-            <input type="file" className="mb-4 text-sm" onChange={async (e) => {
-              const f = e.target.files?.[0];
-              if (!f || !id) return;
-              const fd = new FormData();
-              fd.append('file', f);
-              fd.append('projectId', id);
-              fd.append('category', 'General');
-              await apiUpload('/documents', fd);
-              load();
-            }} />
-            <ul className="text-sm space-y-2">{(docs as DocRow[]).map((d) => (
-              <li key={d.id}><a href={`/api/documents/${d.id}/download`} className="btn btn-link btn-sm">{d.filename}</a></li>
-            ))}</ul>
+          <CardHeader
+            title="Documents"
+            actions={<Link to={`/documents${q}`} className="btn btn-ghost btn-sm">Open</Link>}
+          />
+          <CardBody className="p-0 overflow-x-auto">
+            <DocumentsTable
+              groups={groupDocuments(docs as DocumentRow[])}
+              showProject={false}
+              manageHref={`/documents${q}`}
+              emptyMessage="No documents for this project yet."
+              onDownload={async (group) => {
+                try {
+                  for (const doc of group.docs) {
+                    await apiDownload(`/documents/${doc.id}/download`, doc.filename);
+                  }
+                  if (group.docs.length > 1) {
+                    toast.success(`Downloaded ${group.docs.length} files`);
+                  }
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : 'Failed to download file');
+                }
+              }}
+            />
           </CardBody>
         </Card>
       )}
       {tab === 'activity' && (
         <Card>
           <CardHeader title="Audit trail" />
-          <CardBody className="space-y-2 text-sm">
-            {(audit as AuditRow[]).map((a) => (
-              <p key={a.id} className="text-vijayanth-ink-2">{formatDate(a.createdAt)} — <strong>{a.user?.name}</strong> — {a.action}</p>
-            ))}
+          <CardBody className="p-0 overflow-x-auto">
+            <table className="tbl audit-trail-tbl">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>User</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(audit as AuditRow[]).length === 0 ? (
+                  <tr>
+                    <td colSpan={3} style={{ textAlign: 'center', color: 'var(--muted)', padding: '2rem' }}>
+                      No activity recorded for this project yet.
+                    </td>
+                  </tr>
+                ) : (
+                  (audit as AuditRow[]).map((a) => (
+                    <tr key={a.id}>
+                      <td className="audit-trail-date">{formatDate(a.createdAt)}</td>
+                      <td className="name-cell audit-trail-user">{a.user?.name ?? '—'}</td>
+                      <td className="audit-trail-action">{a.action}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
           </CardBody>
         </Card>
       )}
@@ -220,8 +266,17 @@ type TaskRow = {
 };
 type PoRow = { id: string; poNumber: string; totalAmount: number; status: string; vendor?: { name: string } };
 type PayRow = { id: string; amount: number; status: string; po?: { poNumber: string }; payment?: { paidAt: string } | null };
-type InvRow = { id: string; invoiceNumber: string; amount: number; issuedAt: string };
-type DocRow = { id: string; filename: string };
+type InvRow = {
+  id: string;
+  invoiceNumber: string;
+  amount: number;
+  issuedAt: string;
+  _count?: { receiptLinks: number };
+};
+
+function isInvoicePaid(invoice: InvRow): boolean {
+  return (invoice._count?.receiptLinks ?? 0) > 0;
+}
 type AuditRow = { id: string; action: string; createdAt: string; user?: { name: string } };
 
 // ── Edit Task Modal ────────────────────────────────────────────────────────────

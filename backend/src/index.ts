@@ -24,6 +24,7 @@ import settingsRoutes from './routes/settings.js';
 import dailyStatusRoutes from './routes/daily-status.js';
 import approvalRoutes from './routes/approvals.js';
 import navRoutes from './routes/nav.js';
+import searchRoutes from './routes/search.js';
 // import connectSqlite3 from 'connect-sqlite3';
 // const SQLiteStore = connectSqlite3(session);
 
@@ -89,6 +90,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/daily-status', dailyStatusRoutes);
 app.use('/api/approvals', approvalRoutes);
 app.use('/api/nav', navRoutes);
+app.use('/api/search', searchRoutes);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 

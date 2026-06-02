@@ -28,11 +28,22 @@ type Receipt = {
   id: string;
   amount: number;
   receivedAt: string;
+  createdAt?: string;
   reference?: string;
   mode?: string;
   project?: { id: string; name: string };
   invoiceLinks?: { invoice: { id: string; invoiceNumber: string } }[];
 };
+
+function sortReceiptsNewestFirst(items: Receipt[]): Receipt[] {
+  return [...items].sort((a, b) => {
+    const byReceived = new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime();
+    if (byReceived !== 0) return byReceived;
+    const aCreated = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const bCreated = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return bCreated - aCreated;
+  });
+}
 
 const PAYMENT_MODES = ['NEFT', 'RTGS', 'IMPS', 'Cheque', 'Cash', 'Other'] as const;
 
@@ -70,9 +81,11 @@ export function ReceivablesPage() {
     ? data.filter((r) => scopedProjectIds.has(r.projectId))
     : data;
 
-  const filteredReceipts = scopedProjectIds
-    ? receipts.filter((r) => r.project?.id && scopedProjectIds.has(r.project.id))
-    : receipts;
+  const filteredReceipts = sortReceiptsNewestFirst(
+    scopedProjectIds
+      ? receipts.filter((r) => r.project?.id && scopedProjectIds.has(r.project.id))
+      : receipts,
+  );
 
   const totalBillable = filteredData.reduce((s, r) => s + r.billable, 0);
   const totalCollected = filteredData.reduce((s, r) => s + r.received, 0);

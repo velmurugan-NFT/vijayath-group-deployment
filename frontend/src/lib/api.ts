@@ -20,22 +20,28 @@ async function parseError(res: Response): Promise<string> {
   }
 }
 
+type ApiOptions = RequestInit & { silent?: boolean };
+
 export async function api<T>(
   path: string,
-  options?: RequestInit
+  options?: ApiOptions
 ): Promise<T> {
 
-  loadingStore.setLoading(true);
+  const { silent, ...fetchOptions } = options ?? {};
+
+  if (!silent) {
+    loadingStore.setLoading(true);
+  }
 
   try {
 
     const hasBody =
-      options?.body != null;
+      fetchOptions?.body != null;
 
     const res = await fetch(
       `${BASE}${path}`,
       {
-        ...options,
+        ...fetchOptions,
 
         credentials: 'include',
 
@@ -47,7 +53,7 @@ export async function api<T>(
               }
             : {}),
 
-          ...options?.headers,
+          ...fetchOptions?.headers,
         },
       }
     );
@@ -77,7 +83,9 @@ export async function api<T>(
 
   } finally {
 
-    loadingStore.setLoading(false);
+    if (!silent) {
+      loadingStore.setLoading(false);
+    }
 
   }
 

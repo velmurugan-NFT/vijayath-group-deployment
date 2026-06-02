@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useLocation, Link } from 'react-router-dom';
-import { ChevronRight, Menu, Bell, Search, Zap } from 'lucide-react';
+import { ChevronRight, Menu, Bell, Zap } from 'lucide-react';
+import { GlobalSearch } from './GlobalSearch';
 import { useAuth } from '@/context/AuthContext';
 import { useProjectContext } from '@/context/ProjectContext';
 import { api } from '@/lib/api';
@@ -62,11 +63,7 @@ export function TopBar({ onMenuOpen }: { onMenuOpen?: () => void }) {
         )}
       </div>
       <div className="flex items-center gap-2.5 shrink-0">
-        <div className="search-input hidden md:flex">
-          <Search className="w-3.5 h-3.5 shrink-0" />
-          <input placeholder="Search projects, POs, vendors…" />
-          <span className="mono text-[10px] bg-white border border-vijayanth-line px-1 rounded text-vijayanth-muted-2 ml-auto">⌘K</span>
-        </div>
+        <GlobalSearch className="hidden md:block" />
         <button type="button" className="icon-btn" aria-label="Notifications">
           <Bell className="w-4 h-4" />
           <span className="dot" />

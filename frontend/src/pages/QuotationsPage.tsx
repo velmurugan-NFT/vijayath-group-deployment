@@ -116,13 +116,7 @@ export function QuotationsPage() {
             actions={
   <Link
     to="/capture-quotes"
-    className="btn btn-sm"
-    style={{
-      background:  'var(--success)',
-      color: 'white',
-      border: 'none',
-      fontWeight: 600,
-    }}
+    className="btn btn-primary btn-sm"
   >
     <PlusCircle className="w-3.5 h-3.5" />
     New Quotation Request

@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, apiDownload, apiUpload } from '@/lib/api';
-import { formatDate } from '@/lib/formatDate';
+import { groupDocuments, type DocumentRow, type DocGroup } from '@/lib/documentGroups';
+import { DocumentsTable } from '@/components/DocumentsTable';
 import { toast } from 'sonner';
 import { PageHeader } from '@/components/PageHeader';
 import { Card } from '@/components/design/Card';
 import { Button } from '@/components/ui/button';
 import { useProjectContext } from '@/context/ProjectContext';
-import { FileDown, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Loader2, Plus, Trash2 } from 'lucide-react';
 
 const DOCUMENT_TYPES = [
   'Contract',
@@ -23,28 +24,6 @@ const DOCUMENT_TYPES = [
 
 type WbsLineItem = { id: string; description: string };
 type WbsCategory = { id: string; name: string; lineItems: WbsLineItem[] };
-
-type DocumentRow = {
-  id: string;
-  filename: string;
-  category: string | null;
-  documentDate: string | null;
-  notes: string | null;
-  uploadBatchId: string | null;
-  createdAt: string;
-  project: { id: string; name: string };
-  wbsLineItem?: {
-    id: string;
-    description: string;
-    category?: { name: string };
-  } | null;
-};
-
-type DocGroup = {
-  key: string;
-  batchId: string | null;
-  docs: DocumentRow[];
-};
 
 type DocumentForm = {
   projectId: string;
@@ -63,29 +42,6 @@ const emptyForm = (): DocumentForm => ({
   notes: '',
   files: [],
 });
-
-function wbsLabel(item: DocumentRow['wbsLineItem']): string {
-  if (!item) return '—';
-  const cat = item.category?.name;
-  return cat ? `${cat} — ${item.description}` : item.description;
-}
-
-function groupDocuments(docs: DocumentRow[]): DocGroup[] {
-  const map = new Map<string, DocumentRow[]>();
-  for (const d of docs) {
-    const key = d.uploadBatchId ?? d.id;
-    const list = map.get(key) ?? [];
-    list.push(d);
-    map.set(key, list);
-  }
-  return Array.from(map.entries())
-    .map(([key, groupDocs]) => ({
-      key,
-      batchId: groupDocs[0]?.uploadBatchId ?? null,
-      docs: [...groupDocs].sort((a, b) => a.filename.localeCompare(b.filename)),
-    }))
-    .sort((a, b) => new Date(b.docs[0].createdAt).getTime() - new Date(a.docs[0].createdAt).getTime());
-}
 
 function DeleteDocumentModal({
   group,
@@ -536,7 +492,7 @@ export function DocumentsPage() {
 
       <PageHeader
         title="Documents"
-        subtitle="Project document repository"
+        subtitle="Project Document Repository"
         actions={
           <Button onClick={openCreate} disabled={projectsLoading || filteredProjects.length === 0}>
             <Plus className="w-4 h-4" />
@@ -546,101 +502,12 @@ export function DocumentsPage() {
       />
 
       <Card className="overflow-x-auto">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>Project</th>
-              <th>WBS item</th>
-              <th>Type</th>
-              <th>Date</th>
-              <th>Notes</th>
-              <th>File</th>
-              <th>Uploaded</th>
-              <th style={{ textAlign: 'center' }}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {docGroups.map((group) => {
-              const d = group.docs[0];
-              return (
-              <tr key={group.key}>
-                <td className="name-cell">{d.project.name}</td>
-                <td>{wbsLabel(d.wbsLineItem)}</td>
-                <td>{d.category ?? '—'}</td>
-                <td>{d.documentDate ? formatDate(d.documentDate) : '—'}</td>
-                <td style={{ maxWidth: 200 }}>
-                  <span
-                    title={d.notes ?? ''}
-                    style={{
-                      display: '-webkit-box',
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: 'vertical',
-                      overflow: 'hidden',
-                    }}
-                  >
-                    {d.notes ?? '—'}
-                  </span>
-                </td>
-                <td>
-                  <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
-                    {group.docs.map((file) => (
-                      <li key={file.id} className="mono text-[11px]" style={{ marginBottom: 2 }}>
-                        {file.filename}
-                      </li>
-                    ))}
-                  </ul>
-                </td>
-                <td>{formatDate(d.createdAt)}</td>
-                <td style={{ textAlign: 'center' }}>
-                  <div style={{ display: 'inline-flex', flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap' }}>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      title="Edit document"
-                      style={{ padding: '0 8px', color: 'var(--muted)' }}
-                      onClick={() => openEdit(group)}
-                    >
-                      <Pencil style={{ width: 13, height: 13 }} />
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      title={group.docs.length > 1 ? `Download ${group.docs.length} files` : 'Download'}
-                      style={{
-                        background: 'none', border: '1px solid var(--line)',
-                        color: 'var(--vijayanth-green, #134d22)', fontWeight: 600,
-                        display: 'flex', alignItems: 'center', gap: 4,
-                      }}
-                      onClick={() => downloadGroup(group)}
-                    >
-                      <FileDown style={{ width: 13, height: 13 }} />
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      title="Delete document"
-                      style={{
-                        background: 'none', border: '1px solid #fca5a5',
-                        color: '#ef4444', fontWeight: 600,
-                        display: 'flex', alignItems: 'center', gap: 4,
-                      }}
-                      onClick={() => setDeleteGroup(group)}
-                    >
-                      <Trash2 style={{ width: 13, height: 13 }} />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            );})}
-            {docGroups.length === 0 && (
-              <tr>
-                <td colSpan={8} style={{ textAlign: 'center', color: 'var(--muted)', padding: '1.5rem' }}>
-                  No documents found
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        <DocumentsTable
+          groups={docGroups}
+          onEdit={openEdit}
+          onDelete={setDeleteGroup}
+          onDownload={downloadGroup}
+        />
       </Card>
     </div>
   );

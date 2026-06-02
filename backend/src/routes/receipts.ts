@@ -61,7 +61,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res, next) => {
         project: true,
         invoiceLinks: { include: { invoice: { select: { id: true, invoiceNumber: true } } } },
       },
-      orderBy: { receivedAt: 'desc' },
+      orderBy: [{ receivedAt: 'desc' }, { createdAt: 'desc' }],
     });
     res.json(receipts);
   } catch (err) { next(err); }
