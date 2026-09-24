@@ -29,7 +29,7 @@ import searchRoutes from './routes/search.js';
 // const SQLiteStore = connectSqlite3(session);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const uploadDir = path.resolve(__dirname, '../../uploads');
+const uploadDir = process.env.UPLOAD_DIR ?? path.resolve(__dirname, '../../uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 // Serialize BigInt in JSON responses
@@ -92,7 +92,12 @@ app.use('/api/approvals', approvalRoutes);
 app.use('/api/nav', navRoutes);
 app.use('/api/search', searchRoutes);
 
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
+const webDist = path.resolve(__dirname, '../../frontend/dist');
+if (fs.existsSync(webDist)) {
+  app.use(express.static(webDist));
+  app.get(/^\/(?!api\/|uploads\/).*/, (_req, res) =>
+    res.sendFile(path.join(webDist, 'index.html')));
+}
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
@@ -101,11 +106,20 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
   if (!res.headersSent) res.status(status).json({ error: message });
 });
 
-const server = app.listen(PORT, () => console.log(`API running on http://localhost:${PORT}`));
-server.on('error', (err: NodeJS.ErrnoException) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`Port ${PORT} is already in use. Stop the other process or run: lsof -ti:${PORT} | xargs kill -9`);
-    process.exit(1);
-  }
-  throw err;
-});
+if (process.env.VERCEL !== '1') {
+  const server = app.listen(PORT, () => {
+    console.log(`API running on http://localhost:${PORT}`);
+  });
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(
+        `Port ${PORT} is already in use. Stop the other process or run: lsof -ti:${PORT} | xargs kill -9`
+      );
+      process.exit(1);
+    }
+    throw err;
+  });
+}
+
+export default app;

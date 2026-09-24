@@ -7,8 +7,7 @@ import { prisma } from '../lib/prisma.js';
 import { AuthRequest, requireAuth } from '../middleware/auth.js';
 import { assertCan } from '../lib/rbac.js';
 import { getProjectContext, projectFilter } from '../lib/scope.js';
-
-const uploadDir = path.resolve(process.cwd(), '../uploads');
+const uploadDir = process.env.UPLOAD_DIR ?? path.resolve(process.cwd(), '../uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 const storage = multer.diskStorage({

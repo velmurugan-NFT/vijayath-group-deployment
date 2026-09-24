@@ -65,6 +65,7 @@ router.post("/login", async (req, res) => {
     name: user.name,
     role: user.role,
     sectorId: user.sectorId,
+    approvalLimit: Number(user.approvalLimit),
     projectIds: user.projectAssignments.map(
       (a) => a.projectId
     )
@@ -81,6 +82,7 @@ router.get("/me", requireAuth, (req, res) => {
     name: u.name,
     role: u.role,
     sectorId: u.sectorId,
+    approvalLimit: Number(u.approvalLimit ?? 0),
     projectIds: u.projectIds
   });
 });
@@ -109,6 +111,7 @@ router.post("/demo-switch", requireAuth, async (req, res) => {
       name: target.name,
       role: target.role,
       sectorId: target.sectorId,
+      approvalLimit: Number(target.approvalLimit),
       projectIds: target.projectAssignments.map((a) => a.projectId)
     });
   });
@@ -194,6 +197,14 @@ function auditFilter(user) {
   if (user.role === Role.SECTOR_HEAD && user.sectorId) return { user: { sectorId: user.sectorId } };
   return {};
 }
+function sumWbs(wbsCategories) {
+  const items = wbsCategories.flatMap((c) => c.lineItems);
+  return {
+    estimated: sumAmounts(items.map((l) => l.estimated)),
+    paid: sumAmounts(items.map((l) => l.paid)),
+    committed: sumAmounts(items.map((l) => l.committed))
+  };
+}
 router2.get("/", requireAuth, async (req, res, next) => {
   try {
     const user = req.user;
@@ -201,7 +212,6 @@ router2.get("/", requireAuth, async (req, res, next) => {
     const requestedProjectId = req.query.projectId;
     const projectWhere = {
       ...pf,
-      parentId: { not: null },
       ...requestedProjectId ? { id: requestedProjectId } : {}
     };
     const scope = requestedProjectId ? { project: { ...pf, id: requestedProjectId } } : projectScope(pf);
@@ -209,7 +219,7 @@ router2.get("/", requireAuth, async (req, res, next) => {
       where: projectWhere,
       include: {
         sector: true,
-        wbsLineItems: true,
+        wbsCategories: { include: { lineItems: true } },
         tasks: true,
         customerReceipts: true,
         customerInvoices: true
@@ -227,11 +237,22 @@ router2.get("/", requireAuth, async (req, res, next) => {
     const todaysTasks = await prisma.task.findMany({
       where: {
         ...scope,
-        plannedEnd: { gte: today, lt: tomorrow },
-        status: { in: [TaskStatus.IN_PROGRESS, TaskStatus.NOT_STARTED] }
+        status: { in: [TaskStatus.IN_PROGRESS, TaskStatus.NOT_STARTED] },
+        OR: [
+          { plannedEnd: { lte: tomorrow } },
+          // due today or overdue
+          { plannedEnd: null }
+          // no date set — still relevant
+        ]
       },
       include: { project: true },
-      take: 10
+      orderBy: [
+        { isDelayed: "desc" },
+        // delayed first
+        { plannedEnd: "asc" }
+        // then soonest deadline
+      ],
+      take: 20
     });
     const pendingPOs = await prisma.purchaseOrder.findMany({
       where: { status: POStatus.PENDING_APPROVAL, ...scope },
@@ -249,7 +270,7 @@ router2.get("/", requireAuth, async (req, res, next) => {
     });
     let portfolio = null;
     if (user.role === Role.CORPORATE_OFFICE || user.role === Role.SUPER_ADMIN) {
-      const all = await prisma.project.findMany({ where: { parentId: { not: null } } });
+      const all = await prisma.project.findMany({ where: {} });
       portfolio = {
         totalBillable: sumAmounts(all.map((p) => p.billable)),
         totalCost: sumAmounts(all.map((p) => p.netCost)),
@@ -263,9 +284,7 @@ router2.get("/", requireAuth, async (req, res, next) => {
       return { projectId: p.id, name: p.name, billable, received, balance: billable - received };
     });
     const heatmap = projects.map((p) => {
-      const estimated = sumAmounts(p.wbsLineItems.map((l) => l.estimated));
-      const paid = sumAmounts(p.wbsLineItems.map((l) => l.paid));
-      const committed = sumAmounts(p.wbsLineItems.map((l) => l.committed));
+      const wbs = sumWbs(p.wbsCategories);
       return {
         id: p.id,
         name: p.name,
@@ -273,10 +292,8 @@ router2.get("/", requireAuth, async (req, res, next) => {
         delayedCount: p.tasks.filter((t) => t.isDelayed).length,
         profit: N(p.profit),
         billable: N(p.billable),
-        estimated,
-        paid,
-        committed,
-        variancePct: estimated > 0 ? Math.round((committed - estimated) / estimated * 100) : 0
+        ...wbs,
+        variancePct: wbs.estimated > 0 ? Math.round((wbs.committed - wbs.estimated) / wbs.estimated * 100) : 0
       };
     });
     let systemStats = null;
@@ -287,24 +304,23 @@ router2.get("/", requireAuth, async (req, res, next) => {
     }
     const primary = requestedProjectId ? projects.find((p) => p.id === requestedProjectId) ?? projects[0] : projects[0];
     const budgetSummary = primary ? {
-      estimated: sumAmounts(primary.wbsLineItems.map((l) => l.estimated)),
-      paid: sumAmounts(primary.wbsLineItems.map((l) => l.paid)),
-      committed: sumAmounts(primary.wbsLineItems.map((l) => l.committed)),
+      ...sumWbs(primary.wbsCategories),
       receivableBalance: receivables.find((r) => r.projectId === primary.id)?.balance ?? 0
     } : null;
     res.json({
       role: user.role,
-      projects: projects.map((p) => ({
-        id: p.id,
-        name: p.name,
-        status: p.status,
-        billable: N(p.billable),
-        netCost: N(p.netCost),
-        profit: N(p.profit),
-        paid: sumAmounts(p.wbsLineItems.map((l) => l.paid)),
-        estimated: sumAmounts(p.wbsLineItems.map((l) => l.estimated)),
-        committed: sumAmounts(p.wbsLineItems.map((l) => l.committed))
-      })),
+      projects: projects.map((p) => {
+        const wbs = sumWbs(p.wbsCategories);
+        return {
+          id: p.id,
+          name: p.name,
+          status: p.status,
+          billable: N(p.billable),
+          netCost: N(p.netCost),
+          profit: N(p.profit),
+          ...wbs
+        };
+      }),
       delayedTasks,
       todaysTasks,
       pendingPOs: pendingPOs.map((p) => ({ ...p, totalAmount: N(p.totalAmount) })),
@@ -348,6 +364,10 @@ function can(user, action, resource) {
   if (user.role === "PROJECT_HEAD") {
     if (action === "read" || action === "update") {
       return true;
+    }
+    if (action === "approve") {
+      if (!resource?.projectId) return false;
+      return user.projectIds?.includes(resource.projectId) ?? false;
     }
     return false;
   }
@@ -457,8 +477,18 @@ router3.get("/:id", requireAuth, async (req, res, next) => {
     const audit = await prisma.auditLog.count({
       where: { entityType: "Project", entityId: project.id }
     });
+    const allLineItems = project.wbsCategories.flatMap((c) => c.lineItems);
+    const computedNetCost = allLineItems.reduce(
+      (sum, li) => sum + BigInt(li.paid ?? 0),
+      BigInt(0)
+    );
+    const computedProfit = BigInt(project.billable ?? 0) - computedNetCost;
     res.json({
       ...project,
+      netCost: computedNetCost,
+      // override stale DB value
+      profit: computedProfit,
+      // override stale DB value
       _counts: { tasks, pos, payments, invoices, documents, audit }
     });
   } catch (err) {
@@ -485,7 +515,13 @@ router3.get("/:id/wbs", requireAuth, async (req, res, next) => {
           ...li,
           remaining: N(li.estimated) - N(li.paid),
           variance: N(li.committed) - N(li.estimated),
-          contributingPOs: pos.map((p) => ({ poNumber: p.po.poNumber, vendor: p.po.vendor.name, amount: N(p.amount) }))
+          contributingPOs: pos.map((p) => ({
+            id: p.po.id,
+            // ← add this
+            poNumber: p.po.poNumber,
+            vendor: p.po.vendor.name,
+            amount: N(p.amount)
+          }))
         };
       })),
       totals: {
@@ -538,16 +574,69 @@ router3.patch("/:id/wbs/line-items/:lineItemId", requireAuth, async (req, res, n
   try {
     const ctx = await getProjectContext(req.params.id);
     assertCan(req.user, "update", ctx ?? void 0);
-    const { estimated } = req.body;
-    if (estimated == null || isNaN(Number(estimated))) {
-      res.status(400).json({ error: "estimated is required and must be a number" });
+    const { description, estimated, categoryName } = req.body;
+    const data = {};
+    if (description != null) data.description = description;
+    if (estimated != null && !isNaN(Number(estimated))) data.estimated = BigInt(Math.round(Number(estimated)));
+    if (categoryName) {
+      let cat = await prisma.wBSCategory.findFirst({
+        where: { projectId: req.params.id, name: categoryName }
+      });
+      if (!cat) {
+        const count = await prisma.wBSCategory.count({ where: { projectId: req.params.id } });
+        cat = await prisma.wBSCategory.create({
+          data: { projectId: req.params.id, name: categoryName, sortOrder: count }
+        });
+      }
+      data.categoryId = cat.id;
+    }
+    if (Object.keys(data).length === 0) {
+      res.status(400).json({ error: "Nothing to update" });
       return;
     }
     const li = await prisma.wBSLineItem.update({
       where: { id: req.params.lineItemId },
-      data: { estimated: BigInt(Math.round(Number(estimated))) }
+      data
+    });
+    const allItems = await prisma.wBSLineItem.findMany({
+      where: { projectId: req.params.id },
+      select: { paid: true }
+    });
+    const liveNetCost = allItems.reduce((s, i) => s + BigInt(i.paid ?? 0), BigInt(0));
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      select: { billable: true }
+    });
+    const liveProfit = BigInt(project?.billable ?? 0) - liveNetCost;
+    await prisma.project.update({
+      where: { id: req.params.id },
+      data: { netCost: liveNetCost, profit: liveProfit }
     });
     res.json({ ...li, estimated: Number(li.estimated) });
+  } catch (err) {
+    next(err);
+  }
+});
+router3.delete("/:id/wbs/line-items/:lineItemId", requireAuth, async (req, res, next) => {
+  try {
+    const ctx = await getProjectContext(req.params.id);
+    assertCan(req.user, "update", ctx ?? void 0);
+    await prisma.wBSLineItem.delete({ where: { id: req.params.lineItemId } });
+    const allItems = await prisma.wBSLineItem.findMany({
+      where: { projectId: req.params.id },
+      select: { paid: true }
+    });
+    const liveNetCost = allItems.reduce((s, i) => s + BigInt(i.paid ?? 0), BigInt(0));
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      select: { billable: true }
+    });
+    const liveProfit = BigInt(project?.billable ?? 0) - liveNetCost;
+    await prisma.project.update({
+      where: { id: req.params.id },
+      data: { netCost: liveNetCost, profit: liveProfit }
+    });
+    res.status(204).end();
   } catch (err) {
     next(err);
   }
@@ -655,21 +744,35 @@ router3.post("/", requireAuth, async (req, res, next) => {
     next(err);
   }
 });
-router3.patch("/:id", requireAuth, async (req, res) => {
-  const ctx = await getProjectContext(req.params.id);
-  assertCan(req.user, "update", ctx ?? void 0);
-  const { name, client, status, billable, netCost } = req.body;
-  const project = await prisma.project.update({
-    where: { id: req.params.id },
-    data: {
-      ...name && { name },
-      ...client && { client },
-      ...status && { status },
-      ...billable != null && { billable: BigInt(billable) },
-      ...netCost != null && { netCost: BigInt(netCost) }
-    }
-  });
-  res.json(project);
+router3.patch("/:id", requireAuth, async (req, res, next) => {
+  try {
+    const ctx = await getProjectContext(req.params.id);
+    assertCan(req.user, "update", ctx ?? void 0);
+    const { name, client, status, billable, netCost } = req.body;
+    const updated = await prisma.project.update({
+      where: { id: req.params.id },
+      data: {
+        ...name && { name },
+        ...client && { client },
+        ...status && { status },
+        ...billable != null && { billable: BigInt(billable) },
+        ...netCost != null && { netCost: BigInt(netCost) }
+      }
+    });
+    const allItems = await prisma.wBSLineItem.findMany({
+      where: { projectId: req.params.id },
+      select: { paid: true }
+    });
+    const liveNetCost = netCost != null ? BigInt(netCost) : allItems.reduce((s, i) => s + BigInt(i.paid ?? 0), BigInt(0));
+    const liveProfit = BigInt(updated.billable ?? 0) - liveNetCost;
+    await prisma.project.update({
+      where: { id: req.params.id },
+      data: { netCost: liveNetCost, profit: liveProfit }
+    });
+    res.json({ ...updated, netCost: liveNetCost, profit: liveProfit });
+  } catch (err) {
+    next(err);
+  }
 });
 router3.delete("/:id", requireAuth, async (req, res, next) => {
   try {
@@ -763,7 +866,7 @@ router4.patch("/:id", requireAuth, async (req, res, next) => {
         actualEnd: resolvedStatus === TaskStatus.COMPLETED ? today : task.actualEnd
       }
     });
-    await writeAudit(req.user.id, "TASK_UPDATED", "Task", task.id, { title: task.title, status });
+    await writeAudit(req.user.id, "TASK_UPDATED", "Task", task.id, { title: task.title, status, projectId: task.projectId });
     res.json(updated);
   } catch (err) {
     next(err);
@@ -778,7 +881,7 @@ router4.delete("/:id", requireAuth, async (req, res, next) => {
     }
     const ctx = await getProjectContext(task.projectId);
     assertCan(req.user, "update", ctx ?? void 0);
-    await writeAudit(req.user.id, "TASK_DELETED", "Task", task.id, { title: task.title });
+    await writeAudit(req.user.id, "TASK_DELETED", "Task", task.id, { title: task.title, projectId: task.projectId });
     await prisma.task.delete({ where: { id: req.params.id } });
     res.status(204).end();
   } catch (err) {
@@ -811,7 +914,7 @@ router4.post("/", requireAuth, async (req, res, next) => {
       },
       include: { project: true }
     });
-    await writeAudit(req.user.id, "TASK_CREATED", "Task", task.id, { title });
+    await writeAudit(req.user.id, "TASK_CREATED", "Task", task.id, { title, projectId });
     res.status(201).json(task);
   } catch (err) {
     next(err);
@@ -1038,6 +1141,7 @@ router6.post("/", requireAuth, async (req, res, next) => {
       },
       include: { project: true, lineItem: true }
     });
+    await writeAudit(req.user.id, "QUOTATION_REQUEST_CREATED", "QuotationRequest", qr.id, { title, projectId });
     res.status(201).json(qr);
   } catch (err) {
     next(err);
@@ -1082,7 +1186,8 @@ router6.delete("/:id", requireAuth, async (req, res, next) => {
     await prisma.quotationRequest.delete({ where: { id: qr.id } });
     await writeAudit(req.user.id, "QUOTATION_REQUEST_DELETED", "QuotationRequest", qr.id, {
       title: qr.title,
-      quotationsDeleted: qr.quotations.length
+      quotationsDeleted: qr.quotations.length,
+      projectId: qr.projectId
     });
     res.json({ success: true });
   } catch (err) {
@@ -1114,6 +1219,11 @@ router6.post("/:id/quotes", requireAuth, async (req, res, next) => {
     await prisma.quotationRequest.update({
       where: { id: qr.id },
       data: { status: QuotationRequestStatus.COMPARISON }
+    });
+    await writeAudit(req.user.id, "VENDOR_QUOTE_ADDED", "Quotation", q.id, {
+      vendorId,
+      amount,
+      projectId: qr.projectId
     });
     res.status(201).json(unpackQuote(q));
   } catch (err) {
@@ -1253,7 +1363,8 @@ router6.post("/:id/select-winner", requireAuth, async (req, res, next) => {
       amount: N(winner.amount),
       isLowestPrice: isLowest,
       reason: reason ?? null,
-      poNumber
+      poNumber,
+      projectId: qr.projectId
     });
     res.json({ quotationRequest: { ...qr, status: QuotationRequestStatus.PO_CREATED }, purchaseOrder: po });
   } catch (err) {
@@ -1284,13 +1395,28 @@ async function recalcLineItem(lineItemId) {
 }
 
 // src/lib/approvals.ts
-function resolveRequiredApproverRole(amount) {
-  if (amount <= 5e4) return Role.PROJECT_HEAD;
-  if (amount <= 5e5) return Role.SECTOR_HEAD;
+var DEFAULT_APPROVAL_LIMIT = 1e6;
+async function getThreshold(role) {
+  const t = await prisma.approvalThreshold.findUnique({ where: { role } });
+  const n = (v, fallback) => Number(v ?? BigInt(fallback));
+  if (role === Role.PROJECT_HEAD) return n(t?.ceiling, 5e4);
+  if (role === Role.SECTOR_HEAD) return n(t?.ceiling, 5e5);
+  return n(t?.ceiling, Number.MAX_SAFE_INTEGER);
+}
+async function getUserApprovalLimit(user) {
+  const personal = Number(user.approvalLimit ?? 0);
+  if (personal > 0) return personal;
+  return getThreshold(user.role);
+}
+async function resolveRequiredApproverRole(amount) {
+  const ph = await getThreshold(Role.PROJECT_HEAD);
+  const sh = await getThreshold(Role.SECTOR_HEAD);
+  if (amount <= ph) return Role.PROJECT_HEAD;
+  if (amount <= sh) return Role.SECTOR_HEAD;
   return Role.CORPORATE_OFFICE;
 }
-function canRoleApprove(role, amount) {
-  const required = resolveRequiredApproverRole(amount);
+async function canRoleApprove(role, amount) {
+  const required = await resolveRequiredApproverRole(amount);
   const hierarchy = {
     [Role.PROJECT_HEAD]: 1,
     [Role.SECTOR_HEAD]: 2,
@@ -1298,6 +1424,13 @@ function canRoleApprove(role, amount) {
     [Role.SUPER_ADMIN]: 4
   };
   return hierarchy[role] >= hierarchy[required];
+}
+async function canUserApprove(user, amount) {
+  if (user.role === Role.SUPER_ADMIN) return true;
+  const limit = await getUserApprovalLimit(user);
+  if (amount > limit) return false;
+  if (Number(user.approvalLimit ?? 0) > 0) return true;
+  return canRoleApprove(user.role, amount);
 }
 
 // src/routes/pos.ts
@@ -1381,7 +1514,7 @@ router7.patch("/:id", requireAuth, async (req, res, next) => {
       },
       include: { vendor: true, lineItems: true }
     });
-    await writeAudit(req.user.id, "PO_EDITED", "PurchaseOrder", po.id, { poNumber: po.poNumber });
+    await writeAudit(req.user.id, "PO_EDITED", "PurchaseOrder", po.id, { poNumber: po.poNumber, projectId: po.projectId });
     res.json(updated);
   } catch (err) {
     next(err);
@@ -1401,7 +1534,7 @@ router7.post("/:id/submit", requireAuth, async (req, res, next) => {
       data: { status: POStatus.PENDING_APPROVAL },
       include: { vendor: true, lineItems: true }
     });
-    await writeAudit(req.user.id, "PO_SUBMITTED", "PurchaseOrder", po.id, { poNumber: po.poNumber, amount: po.totalAmount });
+    await writeAudit(req.user.id, "PO_SUBMITTED", "PurchaseOrder", po.id, { poNumber: po.poNumber, amount: po.totalAmount, projectId: po.projectId });
     res.json(updated);
   } catch (err) {
     next(err);
@@ -1420,8 +1553,8 @@ router7.post("/:id/approve", requireAuth, async (req, res, next) => {
     blockSelfApproval(req.user.id, po.requesterId);
     const poAmount = N(po.totalAmount);
     blockMakerChecker(req.user.id, po.requesterId);
-    if (!canRoleApprove(req.user.role, poAmount)) {
-      res.status(403).json({ error: "Your role cannot approve this amount" });
+    if (!await canUserApprove(req.user, poAmount)) {
+      res.status(403).json({ error: "Amount exceeds your approval limit" });
       return;
     }
     const impact = await buildBudgetImpact(po.lineItems, POStatus.PENDING_APPROVAL);
@@ -1436,7 +1569,7 @@ router7.post("/:id/approve", requireAuth, async (req, res, next) => {
       include: { vendor: true, lineItems: true }
     });
     for (const li of po.lineItems) await recalcLineItem(li.lineItemId);
-    await writeAudit(req.user.id, "PO_APPROVED", "PurchaseOrder", po.id, { poNumber: po.poNumber });
+    await writeAudit(req.user.id, "PO_APPROVED", "PurchaseOrder", po.id, { poNumber: po.poNumber, projectId: po.projectId });
     res.json(updated);
   } catch (err) {
     next(err);
@@ -1459,7 +1592,7 @@ router7.post("/:id/reject", requireAuth, async (req, res, next) => {
       where: { id: po.id },
       data: { status: POStatus.REJECTED, rejectReason: reason }
     });
-    await writeAudit(req.user.id, "PO_REJECTED", "PurchaseOrder", po.id, { reason });
+    await writeAudit(req.user.id, "PO_REJECTED", "PurchaseOrder", po.id, { reason, projectId: po.projectId });
     res.json(updated);
   } catch (err) {
     next(err);
@@ -1477,7 +1610,7 @@ router7.post("/:id/return", requireAuth, async (req, res, next) => {
       where: { id: po.id },
       data: { status: POStatus.RETURNED, rejectReason: reason ?? "Returned for edit" }
     });
-    await writeAudit(req.user.id, "PO_RETURNED", "PurchaseOrder", po.id, { reason });
+    await writeAudit(req.user.id, "PO_RETURNED", "PurchaseOrder", po.id, { reason, projectId: po.projectId });
     res.json(updated);
   } catch (err) {
     next(err);
@@ -1498,7 +1631,7 @@ router7.post("/:id/send", requireAuth, async (req, res, next) => {
       where: { id: po.id },
       data: { status: POStatus.SENT_TO_VENDOR }
     });
-    await writeAudit(req.user.id, "PO_SENT_TO_VENDOR", "PurchaseOrder", po.id, { poNumber: po.poNumber });
+    await writeAudit(req.user.id, "PO_SENT_TO_VENDOR", "PurchaseOrder", po.id, { poNumber: po.poNumber, projectId: po.projectId });
     res.json(updated);
   } catch (err) {
     next(err);
@@ -1569,7 +1702,8 @@ router7.post("/:id/amend", requireAuth, async (req, res, next) => {
       poNumber: po.poNumber,
       newVersion: currentVersion + 1,
       amendReason,
-      amountChanged
+      amountChanged,
+      projectId: po.projectId
     });
     res.json({ ...updated, requiresReapproval: amountChanged });
   } catch (err) {
@@ -1587,7 +1721,14 @@ router8.get("/", requireAuth, async (req, res, next) => {
     const projectId = req.query.projectId;
     const items = await prisma.paymentRequest.findMany({
       where: { project: projectId ? { ...pf, id: projectId } : pf },
-      include: { po: { include: { vendor: true } }, project: true, requester: true, approver: true, payment: true },
+      include: {
+        po: { include: { vendor: true } },
+        project: true,
+        requester: true,
+        approver: true,
+        payment: true,
+        vendorInvoice: { select: { id: true, invoiceNumber: true } }
+      },
       orderBy: { createdAt: "desc" }
     });
     res.json(items);
@@ -1597,14 +1738,24 @@ router8.get("/", requireAuth, async (req, res, next) => {
 });
 router8.post("/", requireAuth, async (req, res, next) => {
   try {
-    const { poId, amount, purpose, lineItemId } = req.body;
-    const po = await prisma.purchaseOrder.findUnique({ where: { id: poId }, include: { lineItems: true } });
+    const { poId, amount, purpose, lineItemId, vendorInvoiceId } = req.body;
+    const po = await prisma.purchaseOrder.findUnique({
+      where: { id: poId },
+      include: { lineItems: true }
+    });
     if (!po || po.status !== POStatus.APPROVED) {
       res.status(400).json({ error: "PO must be approved" });
       return;
     }
     const ctx = await getProjectContext(po.projectId);
     assertCan(req.user, "create", ctx ?? void 0);
+    if (vendorInvoiceId) {
+      const invoice = await prisma.vendorInvoice.findUnique({ where: { id: vendorInvoiceId } });
+      if (!invoice || invoice.poId !== poId) {
+        res.status(400).json({ error: "Invoice does not belong to this PO" });
+        return;
+      }
+    }
     const pr = await prisma.paymentRequest.create({
       data: {
         projectId: po.projectId,
@@ -1613,9 +1764,13 @@ router8.post("/", requireAuth, async (req, res, next) => {
         purpose,
         lineItemId: lineItemId ?? po.lineItems[0]?.lineItemId,
         requesterId: req.user.id,
-        status: PaymentRequestStatus.DRAFT
+        status: PaymentRequestStatus.DRAFT,
+        vendorInvoiceId: vendorInvoiceId ?? null
       },
-      include: { po: { include: { vendor: true, lineItems: true } } }
+      include: {
+        po: { include: { vendor: true, lineItems: true } },
+        vendorInvoice: { select: { id: true, invoiceNumber: true } }
+      }
     });
     res.status(201).json(pr);
   } catch (err) {
@@ -1633,7 +1788,7 @@ router8.post("/:id/submit", requireAuth, async (req, res, next) => {
       where: { id: pr.id },
       data: { status: PaymentRequestStatus.PENDING_APPROVAL }
     });
-    await writeAudit(req.user.id, "PAYMENT_SUBMITTED", "PaymentRequest", pr.id, { amount: pr.amount });
+    await writeAudit(req.user.id, "PAYMENT_SUBMITTED", "PaymentRequest", pr.id, { amount: pr.amount, projectId: pr.projectId });
     res.json(updated);
   } catch (err) {
     next(err);
@@ -1652,12 +1807,16 @@ router8.post("/:id/approve", requireAuth, async (req, res, next) => {
     blockSelfApproval(req.user.id, pr.requesterId);
     const prAmount = N(pr.amount);
     blockMakerChecker(String(prAmount), req.user.id);
-    if (!canRoleApprove(req.user.role, prAmount)) {
-      res.status(403).json({ error: "Your role cannot approve this amount" });
+    if (!await canUserApprove(req.user, prAmount)) {
+      res.status(403).json({ error: "Amount exceeds your approval limit" });
       return;
     }
-    if (pr.lineItemId) {
-      const line = await prisma.wBSLineItem.findUnique({ where: { id: pr.lineItemId } });
+    const lineItemId = pr.lineItemId ?? (await prisma.pOLineItem.findFirst({
+      where: { poId: pr.poId },
+      select: { lineItemId: true }
+    }))?.lineItemId;
+    if (lineItemId) {
+      const line = await prisma.wBSLineItem.findUnique({ where: { id: lineItemId } });
       if (line && N(line.paid) + prAmount > N(line.estimated) && !acknowledgeBreach) {
         res.status(400).json({ error: "Budget breach acknowledgment required", budgetBreach: true });
         return;
@@ -1665,9 +1824,15 @@ router8.post("/:id/approve", requireAuth, async (req, res, next) => {
     }
     const updated = await prisma.paymentRequest.update({
       where: { id: pr.id },
-      data: { status: PaymentRequestStatus.APPROVED, approverId: req.user.id, approvedAt: /* @__PURE__ */ new Date() }
+      data: {
+        status: PaymentRequestStatus.APPROVED,
+        approverId: req.user.id,
+        approvedAt: /* @__PURE__ */ new Date(),
+        // ✅ Persist resolved lineItemId so execute route can use it
+        ...lineItemId && !pr.lineItemId ? { lineItemId } : {}
+      }
     });
-    await writeAudit(req.user.id, "PAYMENT_APPROVED", "PaymentRequest", pr.id, { amount: pr.amount });
+    await writeAudit(req.user.id, "PAYMENT_APPROVED", "PaymentRequest", pr.id, { amount: pr.amount, projectId: pr.projectId });
     res.json(updated);
   } catch (err) {
     next(err);
@@ -1676,26 +1841,61 @@ router8.post("/:id/approve", requireAuth, async (req, res, next) => {
 router8.post("/:id/execute", requireAuth, async (req, res, next) => {
   try {
     const { utr } = req.body;
-    const pr = await prisma.paymentRequest.findUnique({ where: { id: req.params.id } });
+    const pr = await prisma.paymentRequest.findUnique({
+      where: { id: req.params.id },
+      include: {
+        po: {
+          include: {
+            lineItems: { select: { lineItemId: true } }
+          }
+        }
+      }
+    });
     if (!pr || pr.status !== PaymentRequestStatus.APPROVED) {
       res.status(400).json({ error: "Payment must be approved first" });
       return;
     }
     const ctx = await getProjectContext(pr.projectId);
     assertCan(req.user, "update", ctx ?? void 0);
+    const resolvedLineItemId = pr.lineItemId ?? pr.po.lineItems[0]?.lineItemId ?? null;
     const payment = await prisma.payment.create({
       data: { paymentRequestId: pr.id, utr, paidAt: /* @__PURE__ */ new Date(), amount: pr.amount }
     });
-    await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: PaymentRequestStatus.PAID } });
-    if (pr.lineItemId) {
+    await prisma.paymentRequest.update({
+      where: { id: pr.id },
+      data: { status: PaymentRequestStatus.PAID }
+    });
+    if (resolvedLineItemId) {
       await prisma.wBSLineItem.update({
-        where: { id: pr.lineItemId },
+        where: { id: resolvedLineItemId },
         data: { paid: { increment: pr.amount } }
       });
-      await recalcLineItem(pr.lineItemId);
+      await recalcLineItem(resolvedLineItemId);
     }
-    await writeAudit(req.user.id, "PAYMENT_EXECUTED", "Payment", payment.id, { utr, amount: pr.amount });
+    await writeAudit(req.user.id, "PAYMENT_EXECUTED", "Payment", payment.id, { utr, amount: pr.amount, projectId: pr.projectId });
     res.json({ payment, paymentRequest: pr });
+  } catch (err) {
+    next(err);
+  }
+});
+router8.delete("/:id", requireAuth, async (req, res, next) => {
+  try {
+    const pr = await prisma.paymentRequest.findUnique({
+      where: { id: req.params.id }
+    });
+    if (!pr) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+    if (pr.status === PaymentRequestStatus.PAID) {
+      res.status(400).json({ error: "Cannot delete a payment that has already been executed" });
+      return;
+    }
+    const ctx = await getProjectContext(pr.projectId);
+    assertCan(req.user, "delete", ctx ?? void 0);
+    await prisma.paymentRequest.delete({ where: { id: pr.id } });
+    await writeAudit(req.user.id, "PAYMENT_DELETED", "PaymentRequest", pr.id, { amount: pr.amount, projectId: pr.projectId });
+    res.json({ success: true });
   } catch (err) {
     next(err);
   }
@@ -1710,9 +1910,16 @@ router9.get("/", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
     const projectId = req.query.projectId;
+    const availableForReceipt = req.query.availableForReceipt === "true";
     const invoices = await prisma.customerInvoice.findMany({
-      where: { project: projectId ? { ...pf, id: projectId } : pf },
-      include: { project: true },
+      where: {
+        project: projectId ? { ...pf, id: projectId } : pf,
+        ...availableForReceipt && { receiptLinks: { none: {} } }
+      },
+      include: {
+        project: true,
+        _count: { select: { receiptLinks: true } }
+      },
       orderBy: { issuedAt: "desc" }
     });
     res.json(invoices);
@@ -1741,8 +1948,65 @@ router9.post("/", requireAuth, async (req, res, next) => {
       },
       include: { project: true }
     });
-    await writeAudit(req.user.id, "INVOICE_GENERATED", "CustomerInvoice", invoice.id, { invoiceNumber, amount });
+    await writeAudit(req.user.id, "INVOICE_GENERATED", "CustomerInvoice", invoice.id, { invoiceNumber, amount, projectId });
     res.status(201).json(invoice);
+  } catch (err) {
+    next(err);
+  }
+});
+router9.patch("/:id", requireAuth, async (req, res, next) => {
+  try {
+    const existing = await prisma.customerInvoice.findUnique({
+      where: { id: req.params.id },
+      include: { project: true }
+    });
+    if (!existing) {
+      res.status(404).json({ error: "Invoice not found" });
+      return;
+    }
+    const ctx = await getProjectContext(existing.projectId);
+    assertCan(req.user, "update", ctx ?? void 0);
+    const { type, amount, milestone, taxAmount } = req.body;
+    const invoice = await prisma.customerInvoice.update({
+      where: { id: req.params.id },
+      data: {
+        ...type != null && { type },
+        ...amount != null && { amount },
+        ...milestone !== void 0 && { milestone: milestone || null },
+        ...taxAmount != null && { taxAmount }
+      },
+      include: { project: true }
+    });
+    await writeAudit(req.user.id, "INVOICE_UPDATED", "CustomerInvoice", invoice.id, {
+      invoiceNumber: invoice.invoiceNumber,
+      amount: N(invoice.amount)
+    });
+    res.json(invoice);
+  } catch (err) {
+    next(err);
+  }
+});
+router9.delete("/:id", requireAuth, async (req, res, next) => {
+  try {
+    const existing = await prisma.customerInvoice.findUnique({
+      where: { id: req.params.id },
+      include: { receiptLinks: true }
+    });
+    if (!existing) {
+      res.status(404).json({ error: "Invoice not found" });
+      return;
+    }
+    const ctx = await getProjectContext(existing.projectId);
+    assertCan(req.user, "delete", ctx ?? void 0);
+    if (existing.receiptLinks.length > 0) {
+      res.status(400).json({ error: "Cannot delete an invoice that has a receipt linked to it" });
+      return;
+    }
+    await prisma.customerInvoice.delete({ where: { id: req.params.id } });
+    await writeAudit(req.user.id, "INVOICE_DELETED", "CustomerInvoice", existing.id, {
+      invoiceNumber: existing.invoiceNumber
+    });
+    res.status(204).send();
   } catch (err) {
     next(err);
   }
@@ -1761,7 +2025,7 @@ router9.get("/:id/pdf", requireAuth, async (req, res, next) => {
     const page = pdf.addPage([595, 842]);
     const font = await pdf.embedFont(StandardFonts.Helvetica);
     const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-    const fmt = (n) => `\u20B9${n.toLocaleString("en-IN")}`;
+    const fmt = (n) => `Rs. ${n.toLocaleString("en-IN")}`;
     let y = 780;
     page.drawText("VIJAYANTH RENEWABLE ENERGY PROJECTS", { x: 50, y, size: 14, font: bold, color: rgb(0.075, 0.243, 0.133) });
     y -= 30;
@@ -1834,8 +2098,11 @@ router10.get("/", requireAuth, async (req, res, next) => {
     const pf = await projectFilter(req.user);
     const receipts = await prisma.customerReceipt.findMany({
       where: { project: pf },
-      include: { project: true },
-      orderBy: { receivedAt: "desc" }
+      include: {
+        project: true,
+        invoiceLinks: { include: { invoice: { select: { id: true, invoiceNumber: true } } } }
+      },
+      orderBy: [{ receivedAt: "desc" }, { createdAt: "desc" }]
     });
     res.json(receipts);
   } catch (err) {
@@ -1844,14 +2111,50 @@ router10.get("/", requireAuth, async (req, res, next) => {
 });
 router10.post("/", requireAuth, async (req, res, next) => {
   try {
-    const { projectId, amount, receivedAt, reference } = req.body;
+    const { projectId, amount, receivedAt, reference, mode, invoiceId, invoiceIds } = req.body;
     const ctx = await getProjectContext(projectId);
     assertCan(req.user, "create", ctx ?? void 0);
-    const receipt = await prisma.customerReceipt.create({
-      data: { projectId, amount, receivedAt: new Date(receivedAt), reference },
-      include: { project: true }
+    const linkedInvoiceId = invoiceId ?? (Array.isArray(invoiceIds) ? invoiceIds[0] : void 0);
+    if (!linkedInvoiceId) {
+      res.status(400).json({ error: "Select an invoice" });
+      return;
+    }
+    const invoice = await prisma.customerInvoice.findFirst({
+      where: { id: linkedInvoiceId, projectId },
+      include: { receiptLinks: { select: { receiptId: true } } }
     });
-    await writeAudit(req.user.id, "RECEIPT_RECORDED", "CustomerReceipt", receipt.id, { amount });
+    if (!invoice) {
+      res.status(400).json({ error: "Invoice does not belong to this project" });
+      return;
+    }
+    if (invoice.receiptLinks.length > 0) {
+      res.status(400).json({ error: "This invoice already has a receipt recorded" });
+      return;
+    }
+    const invoiceAmount = N(invoice.amount);
+    if (N(amount) !== invoiceAmount) {
+      res.status(400).json({ error: "Amount must match the selected invoice amount" });
+      return;
+    }
+    const receipt = await prisma.customerReceipt.create({
+      data: {
+        projectId,
+        amount,
+        receivedAt: new Date(receivedAt),
+        reference,
+        mode: mode?.trim() || null,
+        invoiceLinks: { create: [{ invoiceId: linkedInvoiceId }] }
+      },
+      include: {
+        project: true,
+        invoiceLinks: { include: { invoice: { select: { id: true, invoiceNumber: true } } } }
+      }
+    });
+    await writeAudit(req.user.id, "RECEIPT_RECORDED", "CustomerReceipt", receipt.id, {
+      amount,
+      projectId,
+      invoiceId: linkedInvoiceId
+    });
     res.status(201).json(receipt);
   } catch (err) {
     next(err);
@@ -1864,6 +2167,7 @@ import { Router as Router11 } from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 var uploadDir = path.resolve(process.cwd(), "../uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 var storage = multer.diskStorage({
@@ -1872,13 +2176,38 @@ var storage = multer.diskStorage({
 });
 var upload = multer({ storage });
 var router11 = Router11();
+var docInclude = {
+  project: true,
+  uploadedBy: true,
+  wbsLineItem: { include: { category: true } }
+};
+function parseDocumentDate(raw) {
+  if (!raw || typeof raw !== "string" || !raw.trim()) return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+function metadataFromBody(body) {
+  const { projectId, wbsLineItemId, category, documentDate, notes } = body;
+  const wbsId = typeof wbsLineItemId === "string" && wbsLineItemId.trim() ? wbsLineItemId.trim() : null;
+  const cat = typeof category === "string" && category.trim() ? category.trim() : null;
+  const date = parseDocumentDate(documentDate);
+  const noteText = typeof notes === "string" && notes.trim() ? notes.trim() : null;
+  return { projectId, wbsLineItemId: wbsId, category: cat, documentDate: date, notes: noteText };
+}
+async function validateWbsForProject(projectId, wbsLineItemId) {
+  if (!wbsLineItemId) return null;
+  const lineItem = await prisma.wBSLineItem.findFirst({
+    where: { id: wbsLineItemId, projectId }
+  });
+  return lineItem ? null : "WBS item not found for this project";
+}
 router11.get("/", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
     const { projectId } = req.query;
     const docs = await prisma.document.findMany({
       where: { project: pf, ...projectId ? { projectId: String(projectId) } : {} },
-      include: { project: true, uploadedBy: true },
+      include: docInclude,
       orderBy: { createdAt: "desc" }
     });
     res.json(docs);
@@ -1886,26 +2215,169 @@ router11.get("/", requireAuth, async (req, res, next) => {
     next(err);
   }
 });
-router11.post("/", requireAuth, upload.single("file"), async (req, res, next) => {
+router11.post("/", requireAuth, upload.array("files", 50), async (req, res, next) => {
   try {
-    const { projectId, category } = req.body;
-    if (!req.file) {
-      res.status(400).json({ error: "No file" });
+    const files = req.files;
+    if (!files?.length) {
+      res.status(400).json({ error: "At least one file is required" });
       return;
     }
-    const ctx = await getProjectContext(projectId);
+    const meta = metadataFromBody(req.body);
+    if (!meta.projectId || typeof meta.projectId !== "string") {
+      res.status(400).json({ error: "Project is required" });
+      return;
+    }
+    const wbsErr = await validateWbsForProject(meta.projectId, meta.wbsLineItemId);
+    if (wbsErr) {
+      res.status(400).json({ error: wbsErr });
+      return;
+    }
+    const ctx = await getProjectContext(meta.projectId);
     assertCan(req.user, "create", ctx ?? void 0);
-    const doc = await prisma.document.create({
+    const batchId = files.length > 1 ? crypto.randomUUID() : null;
+    const docs = await Promise.all(files.map(
+      (file) => prisma.document.create({
+        data: {
+          projectId: meta.projectId,
+          wbsLineItemId: meta.wbsLineItemId,
+          filename: file.originalname,
+          filepath: file.filename,
+          category: meta.category,
+          documentDate: meta.documentDate,
+          notes: meta.notes,
+          uploadBatchId: batchId,
+          uploadedById: req.user.id
+        },
+        include: docInclude
+      })
+    ));
+    res.status(201).json(docs);
+  } catch (err) {
+    next(err);
+  }
+});
+router11.patch("/batches/:batchId", requireAuth, async (req, res, next) => {
+  try {
+    const batchDocs = await prisma.document.findMany({ where: { uploadBatchId: req.params.batchId } });
+    if (!batchDocs.length) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+    const meta = metadataFromBody(req.body);
+    if (!meta.projectId || typeof meta.projectId !== "string") {
+      res.status(400).json({ error: "Project is required" });
+      return;
+    }
+    const wbsErr = await validateWbsForProject(meta.projectId, meta.wbsLineItemId);
+    if (wbsErr) {
+      res.status(400).json({ error: wbsErr });
+      return;
+    }
+    const ctx = await getProjectContext(batchDocs[0].projectId);
+    assertCan(req.user, "update", ctx ?? void 0);
+    if (meta.projectId !== batchDocs[0].projectId) {
+      const newCtx = await getProjectContext(meta.projectId);
+      assertCan(req.user, "update", newCtx ?? void 0);
+    }
+    await prisma.document.updateMany({
+      where: { uploadBatchId: req.params.batchId },
       data: {
-        projectId,
-        filename: req.file.originalname,
-        filepath: req.file.filename,
-        category,
-        uploadedById: req.user.id
-      },
-      include: { uploadedBy: true }
+        projectId: meta.projectId,
+        wbsLineItemId: meta.wbsLineItemId,
+        category: meta.category,
+        documentDate: meta.documentDate,
+        notes: meta.notes
+      }
     });
-    res.status(201).json(doc);
+    const docs = await prisma.document.findMany({
+      where: { uploadBatchId: req.params.batchId },
+      include: docInclude,
+      orderBy: { filename: "asc" }
+    });
+    res.json(docs);
+  } catch (err) {
+    next(err);
+  }
+});
+router11.delete("/batches/:batchId", requireAuth, async (req, res, next) => {
+  try {
+    const batchDocs = await prisma.document.findMany({ where: { uploadBatchId: req.params.batchId } });
+    if (!batchDocs.length) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+    const ctx = await getProjectContext(batchDocs[0].projectId);
+    assertCan(req.user, "delete", ctx ?? void 0);
+    for (const doc of batchDocs) {
+      const fp = path.join(uploadDir, doc.filepath);
+      if (fs.existsSync(fp)) fs.unlinkSync(fp);
+    }
+    await prisma.document.deleteMany({ where: { uploadBatchId: req.params.batchId } });
+    res.json({ ok: true, deleted: batchDocs.length });
+  } catch (err) {
+    next(err);
+  }
+});
+router11.patch("/:id", requireAuth, upload.single("file"), async (req, res, next) => {
+  try {
+    const existing = await prisma.document.findUnique({ where: { id: req.params.id } });
+    if (!existing) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+    const ctx = await getProjectContext(existing.projectId);
+    assertCan(req.user, "update", ctx ?? void 0);
+    const meta = metadataFromBody(req.body);
+    if (!meta.projectId || typeof meta.projectId !== "string") {
+      res.status(400).json({ error: "Project is required" });
+      return;
+    }
+    const wbsErr = await validateWbsForProject(meta.projectId, meta.wbsLineItemId);
+    if (wbsErr) {
+      res.status(400).json({ error: wbsErr });
+      return;
+    }
+    if (meta.projectId !== existing.projectId) {
+      const newCtx = await getProjectContext(meta.projectId);
+      assertCan(req.user, "update", newCtx ?? void 0);
+    }
+    const updateData = {
+      projectId: meta.projectId,
+      wbsLineItemId: meta.wbsLineItemId,
+      category: meta.category,
+      documentDate: meta.documentDate,
+      notes: meta.notes
+    };
+    if (req.file) {
+      const oldPath = path.join(uploadDir, existing.filepath);
+      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      updateData.filename = req.file.originalname;
+      updateData.filepath = req.file.filename;
+      updateData.version = { increment: 1 };
+    }
+    const doc = await prisma.document.update({
+      where: { id: req.params.id },
+      data: updateData,
+      include: docInclude
+    });
+    res.json(doc);
+  } catch (err) {
+    next(err);
+  }
+});
+router11.delete("/:id", requireAuth, async (req, res, next) => {
+  try {
+    const existing = await prisma.document.findUnique({ where: { id: req.params.id } });
+    if (!existing) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+    const ctx = await getProjectContext(existing.projectId);
+    assertCan(req.user, "delete", ctx ?? void 0);
+    const fp = path.join(uploadDir, existing.filepath);
+    if (fs.existsSync(fp)) fs.unlinkSync(fp);
+    await prisma.document.delete({ where: { id: req.params.id } });
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
@@ -1979,7 +2451,8 @@ router12.post("/", requireAuth, async (req, res, next) => {
       grnNumber,
       qualityPass: grn.qualityPass,
       qualityRemark: grn.qualityRemark,
-      quantityReceived: grn.quantityReceived
+      quantityReceived: grn.quantityReceived,
+      projectId: po.projectId
     });
     res.status(201).json(grn);
   } catch (err) {
@@ -1991,19 +2464,62 @@ var grn_default = router12;
 // src/routes/vendor-invoices.ts
 import { Router as Router13 } from "express";
 var router13 = Router13();
+async function nextInvoiceNumber() {
+  const prefix = `VI-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 7).replace("-", "")}-`;
+  const last = await prisma.vendorInvoice.findFirst({
+    where: { invoiceNumber: { startsWith: prefix } },
+    orderBy: { invoiceNumber: "desc" }
+  });
+  const seq = last ? parseInt(last.invoiceNumber.slice(prefix.length), 10) + 1 : 1;
+  return `${prefix}${String(seq).padStart(4, "0")}`;
+}
+var includeAll = {
+  po: {
+    include: {
+      vendor: true,
+      project: true,
+      vendorInvoices: { select: { id: true, amount: true } }
+    }
+  },
+  payments: { orderBy: { paidAt: "asc" } }
+};
+async function getPaidAmountForInvoice(invoiceId) {
+  const invoicePayments = await prisma.paymentRequest.findMany({
+    where: {
+      vendorInvoiceId: invoiceId,
+      payment: { isNot: null }
+    },
+    include: { payment: true }
+  });
+  return invoicePayments.reduce((sum, pr) => sum + Number(pr.payment.amount), 0);
+}
+async function attachPaidAmounts(invoices) {
+  return Promise.all(
+    invoices.map(async (inv) => {
+      const paidAmount = await getPaidAmountForInvoice(inv.id);
+      return {
+        ...inv,
+        paidAmount,
+        isPaid: paidAmount >= Number(inv.amount)
+      };
+    })
+  );
+}
+async function fetchInvoices(where) {
+  return prisma.vendorInvoice.findMany({
+    where,
+    include: includeAll,
+    orderBy: { createdAt: "desc" }
+  });
+}
 router13.get("/", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
     const projectId = req.query.projectId;
-    const items = await prisma.vendorInvoice.findMany({
-      where: {
-        po: {
-          project: projectId ? { ...pf, id: projectId } : pf
-        }
-      },
-      include: { po: { include: { vendor: true, project: true } } },
-      orderBy: { createdAt: "desc" }
+    const raw = await fetchInvoices({
+      po: { project: projectId ? { ...pf, id: projectId } : pf }
     });
+    const items = await attachPaidAmounts(raw);
     res.json(items);
   } catch (err) {
     next(err);
@@ -2011,19 +2527,131 @@ router13.get("/", requireAuth, async (req, res, next) => {
 });
 router13.post("/", requireAuth, async (req, res, next) => {
   try {
-    const { poId, invoiceNumber, amount, invoiceDate } = req.body;
+    const { poId, amount, invoiceDate, invoiceNumber: customNumber } = req.body;
     const po = await prisma.purchaseOrder.findUnique({ where: { id: poId } });
     if (!po) {
       res.status(400).json({ error: "PO not found" });
       return;
     }
+    if (po.status !== POStatus.APPROVED && po.status !== POStatus.SENT_TO_VENDOR) {
+      res.status(400).json({ error: "Only approved POs can be invoiced" });
+      return;
+    }
     const ctx = await getProjectContext(po.projectId);
     assertCan(req.user, "create", ctx ?? void 0);
-    const inv = await prisma.vendorInvoice.create({
-      data: { poId, invoiceNumber, amount, invoiceDate: new Date(invoiceDate) },
-      include: { po: { include: { vendor: true, project: true } } }
+    const newAmount = Number(amount ?? po.totalAmount);
+    const existingInvoices = await prisma.vendorInvoice.findMany({
+      where: { poId },
+      select: { amount: true }
     });
-    res.status(201).json(inv);
+    const alreadyInvoiced = existingInvoices.reduce(
+      (sum, inv2) => sum + Number(inv2.amount),
+      0
+    );
+    const remainingBalance = Number(po.totalAmount) - alreadyInvoiced;
+    if (newAmount > remainingBalance) {
+      res.status(400).json({
+        error: `Invoice amount (\u20B9${newAmount}) exceeds remaining PO balance (\u20B9${remainingBalance})`
+      });
+      return;
+    }
+    const invoiceNumber = customNumber?.trim() || await nextInvoiceNumber();
+    const inv = await prisma.vendorInvoice.create({
+      data: {
+        poId,
+        invoiceNumber,
+        amount: newAmount,
+        invoiceDate: new Date(invoiceDate ?? Date.now())
+      },
+      include: includeAll
+    });
+    res.status(201).json({ ...inv, paidAmount: 0, isPaid: false });
+  } catch (err) {
+    next(err);
+  }
+});
+router13.patch("/:id", requireAuth, async (req, res, next) => {
+  try {
+    const inv = await prisma.vendorInvoice.findUnique({
+      where: { id: req.params.id },
+      include: { po: true, payments: true }
+    });
+    if (!inv) {
+      res.status(404).json({ error: "Invoice not found" });
+      return;
+    }
+    const ctx = await getProjectContext(inv.po.projectId);
+    assertCan(req.user, "update", ctx ?? void 0);
+    const { amount, invoiceDate } = req.body;
+    if (amount !== void 0) {
+      const paid = await getPaidAmountForInvoice(inv.id);
+      if (amount < paid) {
+        res.status(400).json({
+          error: `Cannot reduce amount below already-paid total (\u20B9${paid})`
+        });
+        return;
+      }
+      const otherInvoices = await prisma.vendorInvoice.findMany({
+        where: { poId: inv.poId, id: { not: inv.id } },
+        select: { amount: true }
+      });
+      const otherInvoiced = otherInvoices.reduce(
+        (sum, i) => sum + Number(i.amount),
+        0
+      );
+      const maxAllowed = Number(inv.po.totalAmount) - otherInvoiced;
+      if (amount > maxAllowed) {
+        res.status(400).json({
+          error: `Amount exceeds remaining PO balance (\u20B9${maxAllowed})`
+        });
+        return;
+      }
+    }
+    const updated = await prisma.vendorInvoice.update({
+      where: { id: req.params.id },
+      data: {
+        ...amount !== void 0 && { amount },
+        ...invoiceDate !== void 0 && { invoiceDate: new Date(invoiceDate) }
+      },
+      include: includeAll
+    });
+    const paidAmount = await getPaidAmountForInvoice(inv.id);
+    res.json({ ...updated, paidAmount, isPaid: paidAmount >= Number(updated.amount) });
+  } catch (err) {
+    next(err);
+  }
+});
+router13.post("/:id/payments", requireAuth, async (req, res, next) => {
+  try {
+    const inv = await prisma.vendorInvoice.findUnique({
+      where: { id: req.params.id },
+      include: { po: true, payments: true }
+    });
+    if (!inv) {
+      res.status(404).json({ error: "Invoice not found" });
+      return;
+    }
+    const ctx = await getProjectContext(inv.po.projectId);
+    assertCan(req.user, "create", ctx ?? void 0);
+    const paid = inv.payments.reduce((s, p) => s + p.amount, 0);
+    const balance = inv.amount - paid;
+    const { amount, note } = req.body;
+    if (!amount || amount <= 0) {
+      res.status(400).json({ error: "Payment amount must be positive" });
+      return;
+    }
+    if (amount > balance) {
+      res.status(400).json({ error: `Payment (\u20B9${amount}) exceeds balance (\u20B9${balance})` });
+      return;
+    }
+    const payment = await prisma.vendorInvoicePayment.create({
+      data: { invoiceId: inv.id, amount, note }
+    });
+    const updated = await prisma.vendorInvoice.findUnique({
+      where: { id: inv.id },
+      include: includeAll
+    });
+    res.status(201).json({ payment, invoice: updated });
   } catch (err) {
     next(err);
   }
@@ -2197,13 +2825,21 @@ var router16 = Router16();
 router16.get("/users", requireAuth, async (req, res) => {
   assertCan(req.user, "settings:manage");
   const users = await prisma.user.findMany({
-    select: { id: true, email: true, name: true, role: true, sectorId: true, projectAssignments: true }
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      sectorId: true,
+      approvalLimit: true,
+      projectAssignments: true
+    }
   });
-  res.json(users);
+  res.json(users.map((u) => ({ ...u, approvalLimit: Number(u.approvalLimit) })));
 });
 router16.patch("/users/:id", requireAuth, async (req, res) => {
   assertCan(req.user, "users:create");
-  const { name, email, role, sectorId, projectIds } = req.body;
+  const { name, email, role, sectorId, projectIds, approvalLimit } = req.body;
   await prisma.projectAssignment.deleteMany({ where: { userId: req.params.id } });
   const user = await prisma.user.update({
     where: { id: req.params.id },
@@ -2212,16 +2848,17 @@ router16.patch("/users/:id", requireAuth, async (req, res) => {
       ...email && { email },
       ...role && { role },
       ...sectorId !== void 0 && { sectorId },
+      ...approvalLimit !== void 0 && { approvalLimit: BigInt(approvalLimit) },
       ...projectIds?.length && {
         projectAssignments: { create: projectIds.map((pid) => ({ projectId: pid })) }
       }
     }
   });
-  res.json(user);
+  res.json({ ...user, approvalLimit: Number(user.approvalLimit) });
 });
 router16.post("/users", requireAuth, async (req, res) => {
   assertCan(req.user, "users:create");
-  const { email, name, role, password, sectorId, projectIds } = req.body;
+  const { email, name, role, password, sectorId, projectIds, approvalLimit } = req.body;
   const hash = await bcrypt2.hash(password ?? "demo123", 10);
   const user = await prisma.user.create({
     data: {
@@ -2230,10 +2867,11 @@ router16.post("/users", requireAuth, async (req, res) => {
       role,
       password: hash,
       sectorId,
+      approvalLimit: BigInt(approvalLimit ?? DEFAULT_APPROVAL_LIMIT),
       projectAssignments: projectIds?.length ? { create: projectIds.map((pid) => ({ projectId: pid })) } : void 0
     }
   });
-  res.status(201).json(user);
+  res.status(201).json({ ...user, approvalLimit: Number(user.approvalLimit) });
 });
 router16.get("/sectors", requireAuth, async (req, res) => {
   assertCan(req.user, "settings:manage");
@@ -2434,6 +3072,7 @@ var router19 = Router19();
 router19.get("/summary", requireAuth, async (req, res, next) => {
   try {
     const pf = await projectFilter(req.user);
+    const { projectId } = req.query;
     const scope = Object.keys(pf).length > 0 ? { project: pf } : {};
     const [pendingPOs, pendingPayments, delayedTasks] = await Promise.all([
       prisma.purchaseOrder.count({ where: { status: POStatus.PENDING_APPROVAL, ...scope } }),
@@ -2449,6 +3088,118 @@ router19.get("/summary", requireAuth, async (req, res, next) => {
   }
 });
 var nav_default = router19;
+
+// src/routes/search.ts
+import { Router as Router20 } from "express";
+var router20 = Router20();
+var TAKE = 5;
+router20.get("/", requireAuth, async (req, res, next) => {
+  try {
+    const q = String(req.query.q ?? "").trim();
+    if (q.length < 2) {
+      res.json({ results: [] });
+      return;
+    }
+    const pf = await projectFilter(req.user);
+    const projectWhere = { project: pf };
+    const textFilter = (fields) => fields.map((field) => ({ [field]: { contains: q } }));
+    const [projects, vendors, pos, quotations, invoices] = await Promise.all([
+      prisma.project.findMany({
+        where: {
+          ...pf,
+          OR: textFilter(["name", "code", "client"])
+        },
+        take: TAKE,
+        select: { id: true, name: true, code: true, client: true },
+        orderBy: { name: "asc" }
+      }),
+      prisma.vendor.findMany({
+        where: { OR: textFilter(["name", "gstin", "category"]) },
+        take: TAKE,
+        select: { id: true, name: true, category: true },
+        orderBy: { name: "asc" }
+      }),
+      prisma.purchaseOrder.findMany({
+        where: {
+          ...projectWhere,
+          OR: textFilter(["poNumber", "title"])
+        },
+        take: TAKE,
+        select: {
+          id: true,
+          poNumber: true,
+          title: true,
+          project: { select: { name: true } }
+        },
+        orderBy: { createdAt: "desc" }
+      }),
+      prisma.quotationRequest.findMany({
+        where: {
+          ...projectWhere,
+          OR: textFilter(["title", "description"])
+        },
+        take: TAKE,
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          project: { select: { name: true } }
+        },
+        orderBy: { createdAt: "desc" }
+      }),
+      prisma.customerInvoice.findMany({
+        where: {
+          ...projectWhere,
+          OR: textFilter(["invoiceNumber", "milestone"])
+        },
+        take: TAKE,
+        select: {
+          id: true,
+          invoiceNumber: true,
+          type: true,
+          project: { select: { name: true } }
+        },
+        orderBy: { issuedAt: "desc" }
+      })
+    ]);
+    const results = [
+      ...projects.map((p) => ({
+        type: "project",
+        id: p.id,
+        title: p.name,
+        subtitle: [p.code, p.client].filter(Boolean).join(" \xB7 ") || void 0
+      })),
+      ...vendors.map((v) => ({
+        type: "vendor",
+        id: v.id,
+        title: v.name,
+        subtitle: v.category
+      })),
+      ...pos.map((po) => ({
+        type: "po",
+        id: po.id,
+        title: po.poNumber,
+        subtitle: [po.title, po.project.name].filter(Boolean).join(" \xB7 ")
+      })),
+      ...quotations.map((qr) => ({
+        type: "quotation",
+        id: qr.id,
+        title: qr.title,
+        subtitle: [qr.project.name, qr.status].filter(Boolean).join(" \xB7 ")
+      })),
+      ...invoices.map((inv) => ({
+        type: "invoice",
+        id: inv.id,
+        title: inv.invoiceNumber,
+        subtitle: [inv.type, inv.project.name].filter(Boolean).join(" \xB7 ")
+      }))
+    ];
+    res.json({ results });
+  } catch (err) {
+    next(err);
+  }
+});
+var search_default = router20;
 
 // src/index.ts
 var __dirname = path3.dirname(fileURLToPath(import.meta.url));
@@ -2471,9 +3222,9 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: true,
+    secure: process.env.NODE_ENV === "production",
     httpOnly: true,
-    sameSite: "none",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
     maxAge: 24 * 60 * 60 * 1e3
   }
 }));
@@ -2501,6 +3252,7 @@ app.use("/api/settings", settings_default);
 app.use("/api/daily-status", daily_status_default);
 app.use("/api/approvals", approvals_default);
 app.use("/api/nav", nav_default);
+app.use("/api/search", search_default);
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 app.use((err, _req, res, _next) => {
   console.error(err);
@@ -2508,11 +3260,21 @@ app.use((err, _req, res, _next) => {
   const message = err instanceof Error ? err.message : "Internal server error";
   if (!res.headersSent) res.status(status).json({ error: message });
 });
-var server = app.listen(PORT, () => console.log(`API running on http://localhost:${PORT}`));
-server.on("error", (err) => {
-  if (err.code === "EADDRINUSE") {
-    console.error(`Port ${PORT} is already in use. Stop the other process or run: lsof -ti:${PORT} | xargs kill -9`);
-    process.exit(1);
-  }
-  throw err;
-});
+if (process.env.VERCEL !== "1") {
+  const server = app.listen(PORT, () => {
+    console.log(`API running on http://localhost:${PORT}`);
+  });
+  server.on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(
+        `Port ${PORT} is already in use. Stop the other process or run: lsof -ti:${PORT} | xargs kill -9`
+      );
+      process.exit(1);
+    }
+    throw err;
+  });
+}
+var index_default = app;
+export {
+  index_default as default
+};

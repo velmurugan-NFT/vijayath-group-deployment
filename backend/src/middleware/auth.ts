@@ -23,8 +23,8 @@ export async function loadUser(req: AuthRequest, _res: Response, next: NextFunct
       ...user,
       projectIds: user.projectAssignments?.map((a: any) => a.projectId) ?? [],
     } as any;
-    next();
   }
+  next();
 }
 
 export function requireAuth(req: AuthRequest, res: Response, next: NextFunction): void {
